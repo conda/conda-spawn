@@ -54,6 +54,45 @@ def test_fish_shell(simple_env):
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Pty's only available on Unix")
 @pytest.mark.skipif(shutil.which("fish") is None, reason="fish not installed")
+def test_fish_shell_uses_init_injection(simple_env, tmp_path, monkeypatch):
+    config_home = tmp_path / "xdg-config"
+    fish_config = config_home / "fish"
+    fish_config.mkdir(parents=True)
+    (fish_config / "config.fish").write_text(
+        "set -gx CONDA_SPAWN_FISH_CONFIG_LOADED 1\n"
+    )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+
+    shell = FishShell(simple_env)
+    original_write_init_injection = shell.write_init_injection
+
+    def write_init_injection(script_path):
+        result = original_write_init_injection(script_path)
+        assert result is not None
+        argv, env = result
+        return argv, {**env, "CONDA_SPAWN_INIT_INJECTION": "1"}
+
+    monkeypatch.setattr(shell, "write_init_injection", write_init_injection)
+    proc = shell.spawn_tty()
+    proc.sendline(
+        'printf "CONDA_PREFIX=%s\\nCONDA_SPAWN=%s\\n'
+        "CONDA_SPAWN_INIT_INJECTION=%s\\n"
+        'CONDA_SPAWN_FISH_CONFIG_LOADED=%s\\n" "$CONDA_PREFIX" '
+        '"$CONDA_SPAWN" "$CONDA_SPAWN_INIT_INJECTION" '
+        '"$CONDA_SPAWN_FISH_CONFIG_LOADED"'
+    )
+    proc.sendline("exit")
+    proc.expect(pexpect.EOF, timeout=15)
+    out = (proc.before or b"").decode(errors="replace")
+
+    assert f"CONDA_PREFIX={simple_env}" in out
+    assert "CONDA_SPAWN=1" in out
+    assert "CONDA_SPAWN_INIT_INJECTION=1" in out
+    assert "CONDA_SPAWN_FISH_CONFIG_LOADED=1" in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Pty's only available on Unix")
+@pytest.mark.skipif(shutil.which("fish") is None, reason="fish not installed")
 def test_fish_shell_ready_marker_synchronization(simple_env):
     """Regression test: FishShell must use the ready-marker sync approach."""
     shell = FishShell(simple_env)
@@ -152,6 +191,18 @@ def test_fish_shell_prompt_preserves_existing_prompt(fish_shell):
 def test_fish_shell_source_command_and_suffix(fish_shell):
     assert fish_shell.source_command("/tmp/x.fish") == 'source "/tmp/x.fish"'
     assert fish_shell.script_suffix == ".fish"
+
+
+def test_fish_supports_init_injection():
+    assert FishShell.supports_init_injection is True
+
+
+def test_fish_write_init_injection(fish_shell):
+    result = fish_shell.write_init_injection("/tmp/script.fish")
+    assert result is not None
+    argv, env = result
+    assert argv == ("-C", "source /tmp/script.fish")
+    assert env == {}
 
 
 @pytest.mark.parametrize("cls", [CshShell, TcshShell], ids=lambda c: c.__name__)

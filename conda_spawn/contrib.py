@@ -10,6 +10,7 @@ relative to the core supported matrix (`bash`, `zsh`, `powershell`,
 from __future__ import annotations
 
 import re
+import shlex
 from typing import ClassVar
 
 from . import activate
@@ -27,6 +28,7 @@ class FishShell(UnixShell):
 
     Activator = activate.FishActivator
     default_shell = "fish"
+    supports_init_injection: ClassVar[bool] = True
 
     def prompt(self) -> str:
         # Preserve any pre-existing `fish_prompt` (including ones installed
@@ -49,6 +51,11 @@ class FishShell(UnixShell):
 
     def source_command(self, script_path: str) -> str:
         return f'source "{script_path}"'
+
+    def write_init_injection(
+        self, script_path: str
+    ) -> tuple[tuple[str, ...], dict[str, str]] | None:
+        return (("-C", f"source {shlex.quote(script_path)}"), {})
 
     def executable(self) -> str:
         return "fish"

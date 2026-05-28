@@ -7,7 +7,7 @@ import signal
 import subprocess
 import struct
 import sys
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, mkdtemp
 from logging import getLogger
 from pathlib import Path
 from typing import ClassVar, Iterable
@@ -78,7 +78,10 @@ class Shell:
         # AttributeError during garbage collection.
         for path in getattr(self, "_files_to_remove", ()):
             try:
-                os.unlink(path)
+                if os.path.isdir(path):
+                    shutil.rmtree(path)
+                else:
+                    os.unlink(path)
             except OSError as exc:
                 log.debug("Could not delete %s", path, exc_info=exc)
 
@@ -95,10 +98,11 @@ class UnixShell(Shell):
     default_shell: str = "/bin/sh"
     default_args: tuple[str, ...] = ("-l", "-i")
     # When True, the shell supports passing the activation script via
-    # a command-line flag (e.g. bash --rcfile, xonsh --rc) instead of
-    # a separate sendline after startup.  This eliminates a PTY
-    # round-trip and avoids race conditions with shells that discard
-    # typeahead input (like xonsh's readline backend).
+    # a shell-specific startup mechanism (e.g. bash --rcfile, zsh
+    # ZDOTDIR, fish -C, xonsh --rc) instead of a separate sendline after
+    # startup.  This eliminates a PTY round-trip and avoids race
+    # conditions with shells that discard typeahead input (like xonsh's
+    # readline backend).
     supports_init_injection: ClassVar[bool] = False
 
     # Sentinel printed after activation to reliably detect when the
@@ -305,8 +309,41 @@ class BashShell(PosixShell):
 
 
 class ZshShell(PosixShell):
+    supports_init_injection: ClassVar[bool] = True
+
     def executable(self):
         return "zsh"
+
+    def _zsh_source_original(self, filename: str) -> str:
+        return (
+            'if [ -n "${CONDA_SPAWN_ORIGINAL_ZDOTDIR:-}" ] && '
+            f'[ -r "${{CONDA_SPAWN_ORIGINAL_ZDOTDIR}}/{filename}" ]; then\n'
+            f'  . "${{CONDA_SPAWN_ORIGINAL_ZDOTDIR}}/{filename}"\n'
+            f'elif [ -r "$HOME/{filename}" ]; then\n'
+            f'  . "$HOME/{filename}"\n'
+            "fi\n"
+        )
+
+    def write_init_injection(
+        self, script_path: str
+    ) -> tuple[tuple[str, ...], dict[str, str]] | None:
+        zdotdir = Path(mkdtemp(prefix="conda-spawn-zdotdir-"))
+        self._files_to_remove.append(str(zdotdir))
+
+        (zdotdir / ".zshenv").write_text(self._zsh_source_original(".zshenv"))
+        (zdotdir / ".zprofile").write_text(self._zsh_source_original(".zprofile"))
+        (zdotdir / ".zshrc").write_text(self._zsh_source_original(".zshrc"))
+        (zdotdir / ".zlogin").write_text(
+            self._zsh_source_original(".zlogin") + f". {shlex.quote(script_path)}\n"
+        )
+
+        return (
+            (),
+            {
+                "ZDOTDIR": str(zdotdir),
+                "CONDA_SPAWN_ORIGINAL_ZDOTDIR": os.environ.get("ZDOTDIR", ""),
+            },
+        )
 
 
 class PowershellShell(Shell):

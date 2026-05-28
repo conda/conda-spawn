@@ -71,6 +71,49 @@ def test_bash_shell_uses_init_injection(simple_env, monkeypatch):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Pty's only available on Unix")
+@pytest.mark.skipif(shutil.which("zsh") is None, reason="zsh not installed")
+def test_zsh_shell_uses_init_injection(simple_env, tmp_path, monkeypatch):
+    user_zdotdir = tmp_path / "user-zdotdir"
+    user_zdotdir.mkdir()
+    (user_zdotdir / ".zprofile").write_text("export CONDA_SPAWN_ZPROFILE_LOADED=1\n")
+    (user_zdotdir / ".zshrc").write_text("export CONDA_SPAWN_ZSHRC_LOADED=1\n")
+    (user_zdotdir / ".zlogin").write_text("export CONDA_SPAWN_ZLOGIN_LOADED=1\n")
+    monkeypatch.setenv("ZDOTDIR", str(user_zdotdir))
+
+    shell = ZshShell(simple_env)
+    original_write_init_injection = shell.write_init_injection
+
+    def write_init_injection(script_path):
+        result = original_write_init_injection(script_path)
+        assert result is not None
+        argv, env = result
+        return argv, {**env, "CONDA_SPAWN_INIT_INJECTION": "1"}
+
+    monkeypatch.setattr(shell, "write_init_injection", write_init_injection)
+    proc = shell.spawn_tty()
+    proc.sendline(
+        'printf "CONDA_PREFIX=%s\\nCONDA_SPAWN=%s\\n'
+        "CONDA_SPAWN_INIT_INJECTION=%s\\n"
+        "CONDA_SPAWN_ZPROFILE_LOADED=%s\\n"
+        "CONDA_SPAWN_ZSHRC_LOADED=%s\\n"
+        'CONDA_SPAWN_ZLOGIN_LOADED=%s\\n" "$CONDA_PREFIX" '
+        '"$CONDA_SPAWN" "$CONDA_SPAWN_INIT_INJECTION" '
+        '"$CONDA_SPAWN_ZPROFILE_LOADED" "$CONDA_SPAWN_ZSHRC_LOADED" '
+        '"$CONDA_SPAWN_ZLOGIN_LOADED"'
+    )
+    proc.sendline("exit")
+    proc.expect(pexpect.EOF, timeout=15)
+    out = (proc.before or b"").decode(errors="replace")
+
+    assert f"CONDA_PREFIX={simple_env}" in out
+    assert "CONDA_SPAWN=1" in out
+    assert "CONDA_SPAWN_INIT_INJECTION=1" in out
+    assert "CONDA_SPAWN_ZPROFILE_LOADED=1" in out
+    assert "CONDA_SPAWN_ZSHRC_LOADED=1" in out
+    assert "CONDA_SPAWN_ZLOGIN_LOADED=1" in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Pty's only available on Unix")
 def test_posix_shell_ready_marker_synchronization(simple_env, request):
     """Regression test for the double-prompt fix (#22).
 
@@ -280,7 +323,7 @@ def test_unix_shell_is_abstract_enough_to_require_subclass(simple_env):
     [
         (BashShell, True),
         (PosixShell, False),
-        (ZshShell, False),
+        (ZshShell, True),
     ],
     ids=lambda x: x.__name__ if isinstance(x, type) else repr(x),
 )
@@ -290,7 +333,7 @@ def test_supports_init_injection(cls, expected):
 
 @pytest.mark.parametrize(
     "cls",
-    [PosixShell, ZshShell],
+    [PosixShell],
     ids=lambda x: x.__name__,
 )
 def test_write_init_injection_returns_none(cls, simple_env):
@@ -305,6 +348,16 @@ def test_bash_write_init_injection(simple_env):
     argv, env = result
     assert argv == ("--rcfile", "/tmp/script.sh")
     assert env == {}
+
+
+def test_zsh_write_init_injection(simple_env):
+    shell = ZshShell(simple_env)
+    result = shell.write_init_injection("/tmp/script.sh")
+    assert result is not None
+    argv, env = result
+    assert argv == ()
+    assert "ZDOTDIR" in env
+    assert "CONDA_SPAWN_ORIGINAL_ZDOTDIR" in env
 
 
 def test_bash_user_rc_preamble(simple_env):
