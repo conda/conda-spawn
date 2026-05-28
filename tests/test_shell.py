@@ -1,7 +1,9 @@
+import shutil
 import sys
-
-import pytest
 from subprocess import DEVNULL, PIPE, check_output
+
+import pexpect
+import pytest
 
 from conda.base.context import reset_context
 
@@ -38,6 +40,34 @@ def test_posix_shell(simple_env):
     assert "CONDA_SPAWN" in out
     assert "CONDA_PREFIX" in out
     assert str(simple_env) in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Pty's only available on Unix")
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not installed")
+def test_bash_shell_uses_init_injection(simple_env, monkeypatch):
+    shell = BashShell(simple_env)
+    original_write_init_injection = shell.write_init_injection
+
+    def write_init_injection(script_path):
+        result = original_write_init_injection(script_path)
+        assert result is not None
+        argv, env = result
+        return argv, {**env, "CONDA_SPAWN_INIT_INJECTION": "1"}
+
+    monkeypatch.setattr(shell, "write_init_injection", write_init_injection)
+    proc = shell.spawn_tty()
+    proc.sendline(
+        'printf "CONDA_PREFIX=%s\\nCONDA_SPAWN=%s\\n'
+        'CONDA_SPAWN_INIT_INJECTION=%s\\n" "$CONDA_PREFIX" '
+        '"$CONDA_SPAWN" "$CONDA_SPAWN_INIT_INJECTION"'
+    )
+    proc.sendline("exit")
+    proc.expect(pexpect.EOF, timeout=15)
+    out = (proc.before or b"").decode(errors="replace")
+
+    assert f"CONDA_PREFIX={simple_env}" in out
+    assert "CONDA_SPAWN=1" in out
+    assert "CONDA_SPAWN_INIT_INJECTION=1" in out
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Pty's only available on Unix")
