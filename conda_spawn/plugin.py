@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from conda import plugins
+from conda.plugins.types import CondaSubcommand
 
 from . import cli
 
 
 @plugins.hookimpl
 def conda_subcommands():
-    yield plugins.CondaSubcommand(
+    yield CondaSubcommand(
         name="spawn",
         summary="Activate conda environments in new shell processes.",
         action=cli.execute,
