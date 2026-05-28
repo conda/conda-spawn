@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 from conda.common.compat import on_win
 
 from conda_spawn.shell import PowershellShell
