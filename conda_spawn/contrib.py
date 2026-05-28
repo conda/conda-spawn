@@ -125,14 +125,19 @@ class XonshShell(UnixShell):
         return ".xsh"
 
     def user_rc_preamble(self) -> str:
-        # --rc replaces xonsh's default rc files, so we manually source
-        # /etc/xonshrc and ~/.xonshrc before the activation script.
+        # --rc replaces xonsh's default rc discovery, so run xonsh's own
+        # rc loader before the activation script to preserve startup order.
         return (
-            "import os as _os\n"
-            "for _rc in ['/etc/xonshrc', _os.path.expanduser('~/.xonshrc')]:\n"
-            "    if _os.path.exists(_rc):\n"
-            "        source @(_rc)\n"
-            "del _rc, _os"
+            "from xonsh.environ import xonshrc_context as "
+            "_conda_spawn_xonshrc_context\n"
+            "_conda_spawn_xonshrc_context(\n"
+            '    rcfiles=${...}.get("XONSHRC"),\n'
+            '    rcdirs=${...}.get("XONSHRC_DIR"),\n'
+            "    execer=__xonsh__.execer,\n"
+            "    ctx=__xonsh__.ctx,\n"
+            "    env=__xonsh__.env,\n"
+            ")\n"
+            "del _conda_spawn_xonshrc_context"
         )
 
     def write_init_injection(

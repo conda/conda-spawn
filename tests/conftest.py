@@ -47,6 +47,8 @@ def vt100_terminal():
                     continue
                 except pexpect.EOF:
                     break
+                except OSError:
+                    break
 
         reader = threading.Thread(target=_feed, daemon=True)
         reader.start()
