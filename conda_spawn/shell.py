@@ -98,9 +98,9 @@ class UnixShell(Shell):
     default_shell: str = "/bin/sh"
     default_args: tuple[str, ...] = ("-l", "-i")
     # When True, the shell supports passing the activation script via
-    # a shell-specific startup mechanism (e.g. bash --rcfile, zsh
-    # ZDOTDIR, fish -C, xonsh --rc) instead of a separate sendline after
-    # startup.  This eliminates a PTY round-trip and avoids race
+    # a shell-specific startup mechanism (e.g. POSIX ENV, bash --rcfile,
+    # zsh ZDOTDIR, fish -C, xonsh --rc) instead of a separate sendline
+    # after startup.  This eliminates a PTY round-trip and avoids race
     # conditions with shells that discard typeahead input (like xonsh's
     # readline backend).
     supports_init_injection: ClassVar[bool] = False
@@ -272,12 +272,31 @@ class PosixShell(UnixShell):
     Activator = activate.PosixActivator
     default_shell = "/bin/sh"
     prompt_strip_markers = ("PS1=",)
+    supports_init_injection: ClassVar[bool] = True
+    env_init_shells: ClassVar[frozenset[str]] = frozenset(
+        {"ash", "dash", "ksh", "mksh", "sh", "yash"}
+    )
 
     def prompt(self) -> str:
         return f'PS1="{self.prompt_modifier()}${{PS1:-}}"'
 
     def source_command(self, script_path: str) -> str:
         return f'. "{script_path}"'
+
+    def user_rc_preamble(self) -> str:
+        original_env = os.environ.get("ENV")
+        if not original_env:
+            return ""
+        original_env = os.path.expanduser(os.path.expandvars(original_env))
+        quoted_original_env = shlex.quote(original_env)
+        return f"if [ -r {quoted_original_env} ]; then\n  . {quoted_original_env}\nfi"
+
+    def write_init_injection(
+        self, script_path: str
+    ) -> tuple[tuple[str, ...], dict[str, str]] | None:
+        if Path(self.executable()).name not in self.env_init_shells:
+            return None
+        return ((), {"ENV": script_path})
 
 
 class BashShell(PosixShell):

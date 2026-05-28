@@ -43,6 +43,49 @@ def test_posix_shell(simple_env):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Pty's only available on Unix")
+@pytest.mark.skipif(shutil.which("sh") is None, reason="sh not installed")
+def test_posix_shell_uses_init_injection(simple_env, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".profile").write_text("export CONDA_SPAWN_PROFILE_LOADED=1\n")
+    user_env = tmp_path / "user-env.sh"
+    user_env.write_text("export CONDA_SPAWN_USER_ENV_LOADED=1\n")
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("SHELL", shutil.which("sh") or "sh")
+    monkeypatch.setenv("ENV", str(user_env))
+
+    shell = PosixShell(simple_env)
+    original_write_init_injection = shell.write_init_injection
+
+    def write_init_injection(script_path):
+        result = original_write_init_injection(script_path)
+        assert result is not None
+        argv, env = result
+        return argv, {**env, "CONDA_SPAWN_INIT_INJECTION": "1"}
+
+    monkeypatch.setattr(shell, "write_init_injection", write_init_injection)
+    proc = shell.spawn_tty()
+    proc.sendline(
+        'printf "CONDA_PREFIX=%s\\nCONDA_SPAWN=%s\\n'
+        "CONDA_SPAWN_INIT_INJECTION=%s\\n"
+        "CONDA_SPAWN_PROFILE_LOADED=%s\\n"
+        'CONDA_SPAWN_USER_ENV_LOADED=%s\\n" "$CONDA_PREFIX" '
+        '"$CONDA_SPAWN" "$CONDA_SPAWN_INIT_INJECTION" '
+        '"$CONDA_SPAWN_PROFILE_LOADED" "$CONDA_SPAWN_USER_ENV_LOADED"'
+    )
+    proc.sendline("exit")
+    proc.expect(pexpect.EOF, timeout=15)
+    out = (proc.before or b"").decode(errors="replace")
+
+    assert f"CONDA_PREFIX={simple_env}" in out
+    assert "CONDA_SPAWN=1" in out
+    assert "CONDA_SPAWN_INIT_INJECTION=1" in out
+    assert "CONDA_SPAWN_PROFILE_LOADED=1" in out
+    assert "CONDA_SPAWN_USER_ENV_LOADED=1" in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Pty's only available on Unix")
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not installed")
 def test_bash_shell_uses_init_injection(simple_env, monkeypatch):
     shell = BashShell(simple_env)
@@ -322,7 +365,7 @@ def test_unix_shell_is_abstract_enough_to_require_subclass(simple_env):
     "cls, expected",
     [
         (BashShell, True),
-        (PosixShell, False),
+        (PosixShell, True),
         (ZshShell, True),
     ],
     ids=lambda x: x.__name__ if isinstance(x, type) else repr(x),
@@ -331,14 +374,22 @@ def test_supports_init_injection(cls, expected):
     assert cls.supports_init_injection is expected
 
 
-@pytest.mark.parametrize(
-    "cls",
-    [PosixShell],
-    ids=lambda x: x.__name__,
-)
-def test_write_init_injection_returns_none(cls, simple_env):
-    shell = cls(simple_env)
-    assert shell.write_init_injection("/tmp/fake.sh") is None
+def test_posix_write_init_injection(simple_env, monkeypatch):
+    monkeypatch.setenv("SHELL", "/bin/sh")
+    shell = PosixShell(simple_env)
+    result = shell.write_init_injection("/tmp/script.sh")
+    assert result is not None
+    argv, env = result
+    assert argv == ()
+    assert env == {"ENV": "/tmp/script.sh"}
+
+
+def test_posix_write_init_injection_falls_back_for_non_env_shell(
+    simple_env, monkeypatch
+):
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    shell = PosixShell(simple_env)
+    assert shell.write_init_injection("/tmp/script.sh") is None
 
 
 def test_bash_write_init_injection(simple_env):
