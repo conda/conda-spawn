@@ -10,6 +10,7 @@ from conda_spawn.contrib import (
     TcshShell,
     XonshShell,
 )
+from conda_spawn.shell import UnixShell
 
 
 @pytest.fixture
@@ -147,16 +148,16 @@ def test_csh_family_ready_marker_uses_echo(cls, simple_env):
     assert cls(simple_env).ready_marker_command().startswith("echo -n ")
 
 
-def test_xonsh_shell_rewrites_del_var(xonsh_shell):
+def test_xonsh_shell_rewrites_del_var(xonsh_shell, monkeypatch):
     """Regression test: bare `del $VAR` raises KeyError on fresh shells.
 
     The XonshShell.script() override must replace every such line with the
     safe `${...}.pop("VAR", None)` form.
     """
+    monkeypatch.setattr(UnixShell, "script", lambda self: "del $CONDA_EXE\n")
+
     script = xonsh_shell.script()
     assert "del $" not in script
-    # The activator always emits these unset lines; each should be
-    # rewritten. Checking one representative confirms the regex works.
     assert '${...}.pop("CONDA_EXE", None)' in script
 
 

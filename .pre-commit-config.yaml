@@ -1,14 +1,7 @@
 # disable autofixing PRs, commenting "pre-commit.ci autofix" on a pull request triggers a autofix
 ci:
   autofix_prs: false
-# generally speaking we ignore all vendored code as well as tests data
-# TODO: Restore index and solver exclude lines before merge
-exclude: |
-  (?x)^(
-    tests/data/.* |
-    conda_pypi/data/.* |
-    pixi.lock
-  )$
+exclude: ^pixi\.lock$
 repos:
   # generic verification and formatting
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -27,11 +20,6 @@ repos:
           )
       # catch git merge/rebase problems
       - id: check-merge-conflict
-  - repo: https://github.com/adamchainz/blacken-docs
-    rev: 1.20.0
-    hooks:
-      # auto format Python codes within docstrings
-      - id: blacken-docs
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.15
     hooks:
