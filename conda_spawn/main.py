@@ -2,13 +2,8 @@
 
 from __future__ import annotations
 
-from os.path import expanduser, expandvars, abspath
 from pathlib import Path
-from typing import TYPE_CHECKING, Type, Iterable
-
-from conda.base.constants import ROOT_ENV_NAME
-from conda.base.context import context, locate_prefix_by_name
-from conda.exceptions import DirectoryNotACondaEnvironmentError
+from typing import TYPE_CHECKING, Iterable
 
 from .exceptions import ShellNotSupported
 from .registry import SHELLS, detect_shell_class
@@ -41,24 +36,7 @@ def hook(
     return 0
 
 
-def environment_speficier_to_path(
-    name: str | None = None,
-    prefix: str | Path | None = None,
-) -> Path:
-    if sum([bool(x) for x in (name, prefix)]) != 1:
-        raise ValueError("Please provide only name or prefix.")
-    if name in (ROOT_ENV_NAME, "root"):
-        return Path(context.root_prefix)
-    if name:
-        return Path(locate_prefix_by_name(name))
-
-    prefix = Path(abspath(expanduser(expandvars((prefix)))))
-    if (prefix / "conda-meta" / "history").is_dir():
-        raise DirectoryNotACondaEnvironmentError(prefix)
-    return prefix
-
-
-def shell_specifier_to_shell(name: str | None = None) -> Type[Shell]:
+def shell_specifier_to_shell(name: str | None = None) -> type[Shell]:
     if name is None:
         return detect_shell_class()
 

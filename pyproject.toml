@@ -66,12 +66,10 @@ clean = { cmd = "rm -rf _build", cwd = "docs" }
 [tool.pixi.feature.docs.dependencies]
 python = "3.10.*"
 conda-sphinx-theme = "*"
-linkify-it-py = "*"
 myst-parser = "*"
 sphinx = "*"
 sphinx-copybutton = "*"
 sphinx-design = "*"
-sphinx-reredirects = "*"
 sphinx-sitemap = "*"
 sphinxcontrib-programoutput = "*"
 

@@ -16,32 +16,15 @@ author = "conda-spawn contributors"
 
 extensions = [
     "myst_parser",
-    "sphinx.ext.napoleon",
-    "sphinx.ext.autosummary",
-    "sphinx.ext.graphviz",
-    "sphinx.ext.ifconfig",
-    "sphinx.ext.inheritance_diagram",
-    "sphinx.ext.viewcode",
     "sphinx_sitemap",
     "sphinx_design",
     "sphinx_copybutton",
-    "sphinx_reredirects",
     "sphinxcontrib.programoutput",
 ]
 
 myst_heading_anchors = 3
 myst_enable_extensions = [
-    "amsmath",
     "colon_fence",
-    "deflist",
-    "dollarmath",
-    "html_admonition",
-    "html_image",
-    "linkify",
-    "replacements",
-    "smartquotes",
-    "substitution",
-    "tasklist",
 ]
 
 
@@ -100,7 +83,3 @@ html_baseurl = "https://conda-incubator.github.io"
 sitemap_locales = [None]
 # We're hard-coding stable here since that's what we want Google to point to.
 sitemap_url_scheme = "{link}"
-
-# -- For sphinx_reredirects ------------------------------------------------
-
-redirects = {}

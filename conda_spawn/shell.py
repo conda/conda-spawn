@@ -305,11 +305,6 @@ class PowershellShell(Shell):
             return ("-NoLogo", "-NoExit", "-File")
         return ("-NoLogo", "-File")
 
-    def env(self) -> dict[str, str]:
-        env = os.environ.copy()
-        env["CONDA_SPAWN"] = "1"
-        return env
-
 
 class CmdExeShell(PowershellShell):
     Activator = activate.CmdExeActivator
