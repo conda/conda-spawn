@@ -1,0 +1,51 @@
+name: Lock
+
+on:
+  # NOTE: github.event is workflow_dispatch payload:
+  # https://docs.github.com/en/developers/webhooks-and-events/webhooks/webhook-events-and-payloads#workflow_dispatch
+  workflow_dispatch:
+
+  schedule:
+    - cron: 0 6 * * *
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.repository }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lock:
+    name: Lock inactive threads
+    if: '!github.event.repository.fork'
+    runs-on: ubuntu-slim
+    permissions:
+      issues: write  # Required to lock inactive issues.
+      pull-requests: write  # Required to lock inactive pull requests.
+    steps:
+      - uses: dessant/lock-threads@89ae32b08ed1a541efecbab17912962a5e38981c # v6.0.2
+        with:
+          # Number of days of inactivity before a closed issue is locked
+          issue-inactive-days: 180
+          # Do not lock issues created before a given timestamp, value must follow ISO 8601
+          exclude-issue-created-before: ''
+          # Do not lock issues with these labels, value must be a comma separated list of labels or ''
+          exclude-any-issue-labels: ''
+          # Labels to add before locking an issue, value must be a comma separated list of labels or ''
+          add-issue-labels: locked
+          # Reason for locking an issue, value must be one of resolved, off-topic, too heated, spam or ''
+          issue-lock-reason: resolved
+          # Number of days of inactivity before a closed pull request is locked
+          pr-inactive-days: 365
+          # Do not lock pull requests created before a given timestamp, value must follow ISO 8601
+          exclude-pr-created-before: ''
+          # Do not lock pull requests with these labels, value must be a comma separated list of labels or ''
+          exclude-any-pr-labels: ''
+          # Labels to add before locking a pull request, value must be a comma separated list of labels or ''
+          add-pr-labels: locked
+          # Reason for locking a pull request, value must be one of resolved, off-topic, too heated, spam or ''
+          pr-lock-reason: resolved
+
+          # Limit locking to issues, pull requests or discussions, value must be a comma separated list of issues, prs, discussions or ''
+          process-only: issues, prs
