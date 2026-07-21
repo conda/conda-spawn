@@ -15,7 +15,7 @@ def test_cli(monkeypatch, conda_cli, command):
     assert "conda spawn" in out
 
 
-def test_native_alias_registration(monkeypatch):
+def test_alias_registration_with_aliases_parameter(monkeypatch):
     def conda_subcommand(*, name, summary, action, configure_parser=None, aliases=()):
         return SimpleNamespace(
             name=name,
@@ -33,7 +33,7 @@ def test_native_alias_registration(monkeypatch):
     assert command.aliases == ("shell",)
 
 
-def test_legacy_alias_registration(monkeypatch):
+def test_alias_registration_without_aliases_parameter(monkeypatch):
     def conda_subcommand(*, name, summary, action, configure_parser=None):
         return SimpleNamespace(
             name=name,
