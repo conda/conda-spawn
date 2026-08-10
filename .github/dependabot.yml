@@ -1,3 +1,5 @@
+# edit this in https://github.com/conda/infrastructure
+
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -8,21 +10,17 @@ updates:
       workflows:
         patterns:
           - '*'
-
+    cooldown:
+      default-days: 7
+      exclude:
+        - conda/actions
   - package-ecosystem: pre-commit
-    directory: /
-    schedule:
-      interval: weekly
-    groups:
-      pre-commit:
-        patterns:
-          - '*'
-
-  - package-ecosystem: pip
     directory: /
     schedule:
       interval: monthly
     groups:
-      pip:
+      pre-commit:
         patterns:
           - '*'
+    cooldown:
+      default-days: 7
