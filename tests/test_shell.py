@@ -1,7 +1,7 @@
 import sys
 
 import pytest
-from subprocess import PIPE, check_output
+from subprocess import DEVNULL, PIPE, check_output
 
 from conda.base.context import reset_context
 
@@ -76,8 +76,10 @@ def test_posix_shell_ready_marker_synchronization(simple_env, request):
 @pytest.mark.skipif(sys.platform != "win32", reason="Powershell only tested on Windows")
 def test_powershell(simple_env):
     shell = PowershellShell(simple_env)
-    with shell.spawn_popen(command=["ls", "env:"], stdout=PIPE, text=True) as proc:
-        out, _ = proc.communicate(timeout=30)
+    with shell.spawn_popen(
+        command=["ls", "env:"], stdin=DEVNULL, stdout=PIPE, text=True
+    ) as proc:
+        out, _ = proc.communicate(timeout=5)
         proc.kill()
         assert not proc.poll()
         assert "CONDA_SPAWN" in out
