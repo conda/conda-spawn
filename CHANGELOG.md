@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Enhancements
 
 * Add `conda shell` as an alias for `conda spawn`. (#59)
+* Inject Fish and Xonsh activation through their documented startup options so
+  activation completes before the first interactive prompt. (#36)
 
 ### Bug fixes
 
@@ -20,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * Import `CondaSubcommand` from `conda.plugins.types` so conda-spawn remains
   compatible after conda removes the deprecated `conda.plugins` re-export.
   (#38)
+* Preserve native login startup files and logout behavior for POSIX shells,
+  Bash, and Zsh while spawning an activated shell. (#36)
+* Run Xonsh `on_post_rc` handlers before activation and readiness. (#36)
+* Remove temporary activation scripts as soon as the spawned shell reports it
+  is ready. (#36)
+* Keep conda-spawn's nested-session marker out of conda's `CONDA_*`
+  environment-variable namespace. (#36)
 
 ### Other
 
