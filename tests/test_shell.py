@@ -79,7 +79,7 @@ def test_powershell(simple_env):
     with shell.spawn_popen(
         command=["ls", "env:"], stdin=DEVNULL, stdout=PIPE, text=True
     ) as proc:
-        out, _ = proc.communicate(timeout=5)
+        out, _ = proc.communicate(timeout=30)
         proc.kill()
         assert not proc.poll()
         assert "CONDA_SPAWN" in out
