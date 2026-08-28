@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 [//]: # (current developments)
 
+## 0.2.0 (2026-08-28)
+
+### Enhancements
+
+
+
+
+* Add `conda shell` as an alias for `conda spawn`. (#59)
+
+### Bug fixes
+
+* Ensure spawned PowerShell sessions call `conda.exe` instead of the no-op
+  `conda.bat` when running `conda activate` or `conda deactivate`. (#35)
+* Import `CondaSubcommand` from `conda.plugins.types` so conda-spawn remains
+  compatible after conda removes the deprecated `conda.plugins` re-export.
+  (#38)
+
+
+
+### Deprecations
+
+
+
+
+
+
+### Docs
+
+
+
+
+
+
+### Other
+
+
+
+* Use conda's activator classes directly and retain only conda-spawn's `PATH`
+  and environment-variable changes. (#45)
+* Enable infrastructure-managed Dependabot configuration via conda/infrastructure templates. (#47)
+
+
+### Contributors
+
+* @danyeaw
+* @jezdez
+* @conda-bot
+* @dependabot[bot]
+
+
+
 ## [0.1.0] - 2026-04-29
 
 ### Added
