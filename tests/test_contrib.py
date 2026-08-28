@@ -1,7 +1,7 @@
+import os
 import shutil
 import sys
-import time
-from tempfile import NamedTemporaryFile
+from pathlib import Path
 
 import pexpect
 import pytest
@@ -47,7 +47,7 @@ def test_fish_shell(simple_env):
     proc.sendline("env")
     proc.sendeof()
     out = proc.read().decode(errors="replace")
-    assert "CONDA_SPAWN" in out
+    assert "_CONDA_SPAWN" in out
     assert "CONDA_PREFIX" in out
     assert str(simple_env) in out
 
@@ -59,36 +59,40 @@ def test_fish_shell_uses_init_injection(simple_env, tmp_path, monkeypatch):
     fish_config = config_home / "fish"
     fish_config.mkdir(parents=True)
     (fish_config / "config.fish").write_text(
-        "set -gx CONDA_SPAWN_FISH_CONFIG_LOADED 1\n"
+        "set -gx SPAWN_TEST_FISH_CONFIG_LOADED 1\n"
     )
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
 
     shell = FishShell(simple_env)
     original_write_init_injection = shell.write_init_injection
+    activation_paths = []
 
     def write_init_injection(script_path):
+        activation_paths.append(Path(script_path))
         result = original_write_init_injection(script_path)
         assert result is not None
         argv, env = result
-        return argv, {**env, "CONDA_SPAWN_INIT_INJECTION": "1"}
+        return argv, {**env, "SPAWN_TEST_INIT_INJECTION": "1"}
 
     monkeypatch.setattr(shell, "write_init_injection", write_init_injection)
     proc = shell.spawn_tty()
+    assert len(activation_paths) == 1
+    assert not activation_paths[0].exists()
     proc.sendline(
-        'printf "CONDA_PREFIX=%s\\nCONDA_SPAWN=%s\\n'
-        "CONDA_SPAWN_INIT_INJECTION=%s\\n"
-        'CONDA_SPAWN_FISH_CONFIG_LOADED=%s\\n" "$CONDA_PREFIX" '
-        '"$CONDA_SPAWN" "$CONDA_SPAWN_INIT_INJECTION" '
-        '"$CONDA_SPAWN_FISH_CONFIG_LOADED"'
+        'printf "CONDA_PREFIX=%s\\n_CONDA_SPAWN=%s\\n'
+        "SPAWN_TEST_INIT_INJECTION=%s\\n"
+        'SPAWN_TEST_FISH_CONFIG_LOADED=%s\\n" "$CONDA_PREFIX" '
+        '"$_CONDA_SPAWN" "$SPAWN_TEST_INIT_INJECTION" '
+        '"$SPAWN_TEST_FISH_CONFIG_LOADED"'
     )
     proc.sendline("exit")
     proc.expect(pexpect.EOF, timeout=15)
     out = (proc.before or b"").decode(errors="replace")
 
     assert f"CONDA_PREFIX={simple_env}" in out
-    assert "CONDA_SPAWN=1" in out
-    assert "CONDA_SPAWN_INIT_INJECTION=1" in out
-    assert "CONDA_SPAWN_FISH_CONFIG_LOADED=1" in out
+    assert "_CONDA_SPAWN=1" in out
+    assert "SPAWN_TEST_INIT_INJECTION=1" in out
+    assert "SPAWN_TEST_FISH_CONFIG_LOADED=1" in out
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Pty's only available on Unix")
@@ -100,7 +104,8 @@ def test_fish_shell_ready_marker_synchronization(simple_env):
     try:
         marker = FishShell.READY_MARKER
         assert marker, "FishShell must define a non-empty READY_MARKER"
-        assert proc.after == marker.encode()
+        assert proc.after.startswith(marker.encode())
+        assert proc.after != marker.encode()
     finally:
         proc.sendeof()
         proc.read()
@@ -113,7 +118,7 @@ def test_csh_shell(simple_env):
     proc = shell.spawn_tty()
     proc.sendline("env")
     out = _read_via_exit(proc)
-    assert "CONDA_SPAWN" in out
+    assert "_CONDA_SPAWN" in out
     assert "CONDA_PREFIX" in out
     assert str(simple_env) in out
 
@@ -125,45 +130,89 @@ def test_tcsh_shell(simple_env):
     proc = shell.spawn_tty()
     proc.sendline("env")
     out = _read_via_exit(proc)
-    assert "CONDA_SPAWN" in out
+    assert "_CONDA_SPAWN" in out
     assert "CONDA_PREFIX" in out
     assert str(simple_env) in out
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Pty's only available on Unix")
 @pytest.mark.skipif(shutil.which("xonsh") is None, reason="xonsh not installed")
-def test_xonsh_shell(simple_env, tmp_path, vt100_terminal):
+def test_xonsh_shell(simple_env, tmp_path, monkeypatch):
     shell = XonshShell(simple_env)
     rc_dir = tmp_path / "xonshrc.d"
     rc_dir.mkdir()
     (rc_dir / "01-prompt.xsh").write_text(
         '$PROMPT = "RC_D_LOADED " + ${...}.get("PROMPT", "")\n'
+        "@events.on_post_rc\n"
+        "def _conda_spawn_test_post_rc(**kwargs):\n"
+        '    print("POST_RC_FILES=" + "|".join(str(path) for path in '
+        "__xonsh__.rc_files), flush=True)\n"
+        '    print("POST_RC_COMPLETE", flush=True)\n'
+        "@events.on_pre_cmdloop\n"
+        "def _conda_spawn_test_pre_cmdloop(**kwargs):\n"
+        '    print("PRE_CMDLOOP_COMPLETE", flush=True)\n'
     )
-    with NamedTemporaryFile(
-        prefix="conda-spawn-",
-        suffix=".xsh",
-        delete=False,
-        mode="w",
-    ) as f:
-        f.write(shell.spawn_script())
+    monkeypatch.setenv("XONSHRC", "")
+    monkeypatch.setenv("XONSHRC_DIR", str(rc_dir))
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setattr(
+        shutil,
+        "get_terminal_size",
+        lambda fallback=(80, 24): os.terminal_size((500, 30)),
+    )
+    activation_paths = []
+    original_write_init_injection = shell.write_init_injection
 
-    env = shell.env()
-    env["XONSHRC"] = ""
-    env["XONSHRC_DIR"] = str(rc_dir)
-    screen = vt100_terminal("xonsh", ["--rc", f.name, "-i"], env)
+    def write_init_injection(script_path):
+        activation_paths.append(Path(script_path))
+        return original_write_init_injection(script_path)
 
-    # Poll the virtual screen until the env prefix appears in the
-    # prompt, proving CONDA_DEFAULT_ENV was set by the activation.
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        text = "\n".join(screen.display)
-        if str(simple_env) in text and "RC_D_LOADED" in text:
-            break
-        time.sleep(0.1)
-    else:
-        text = "\n".join(screen.display)
-        assert str(simple_env) in text, f"env not in screen:\n{text}"
-        assert "RC_D_LOADED" in text, f"xonsh rc dir not loaded:\n{text}"
+    monkeypatch.setattr(shell, "write_init_injection", write_init_injection)
+    proc = shell.spawn_tty()
+    try:
+        startup_bytes = (proc.before or b"") + (proc.after or b"")
+        startup = startup_bytes.decode(errors="replace")
+        assert "POST_RC_COMPLETE" in startup
+        assert "PRE_CMDLOOP_COMPLETE" in startup
+        assert UnixShell.READY_MARKER in startup
+
+        assert startup.index("POST_RC_COMPLETE") < startup.index("PRE_CMDLOOP_COMPLETE")
+        assert startup.index("PRE_CMDLOOP_COMPLETE") < startup.index(
+            UnixShell.READY_MARKER
+        )
+        rc_files_output = next(
+            line for line in startup.splitlines() if line.startswith("POST_RC_FILES=")
+        )
+        assert str(rc_dir / "01-prompt.xsh") in rc_files_output
+        assert len(activation_paths) == 1
+        assert str(activation_paths[0]) not in rc_files_output
+        assert not activation_paths[0].exists()
+
+        for _ in range(startup_bytes.count(b"\x1b[6n")):
+            proc.send(b"\x1b[1;1R")
+
+        def expect_with_cursor_response(target):
+            chunks = []
+            while True:
+                match = proc.expect_exact([b"\x1b[6n", target], timeout=15)
+                chunks.extend((proc.before or b"", proc.after or b""))
+                if match == 1:
+                    return b"".join(chunks)
+                proc.send(b"\x1b[1;1R")
+
+        prompt_output = expect_with_cursor_response(b"RC_D_LOADED").decode(
+            errors="replace"
+        )
+        assert str(simple_env) in prompt_output
+
+        proc.sendline('print("SECOND_" + "PROMPT_REACHED", flush=True)')
+        expect_with_cursor_response(b"SECOND_PROMPT_REACHED")
+    finally:
+        if proc.isalive():
+            proc.sendline("exit")
+            proc.close(force=True)
+
+    assert startup.count(UnixShell.READY_MARKER) == 1
 
 
 @pytest.mark.parametrize(
@@ -279,14 +328,22 @@ def test_xonsh_write_init_injection(xonsh_shell):
     assert env == {}
 
 
-def test_xonsh_user_rc_preamble(xonsh_shell):
-    preamble = xonsh_shell.user_rc_preamble()
-    assert "xonshrc_context" in preamble
-    assert "XONSHRC" in preamble
-    assert "XONSHRC_DIR" in preamble
+def test_xonsh_user_rc_loader(xonsh_shell):
+    loader = xonsh_shell._user_rc_loader()
+    assert "xonshrc_context" in loader
+    assert "XONSHRC" in loader
+    assert "XONSHRC_DIR" in loader
+    assert "__xonsh__.rc_files = _conda_spawn_user_rc_files" in loader
 
 
-def test_xonsh_spawn_script_includes_preamble(xonsh_shell):
+def test_xonsh_spawn_script_defers_activation(xonsh_shell):
     script = xonsh_shell.spawn_script()
     assert "xonshrc_context" in script
+    assert "events.on_pre_cmdloop.fire = _conda_spawn_fire_pre_cmdloop" in script
     assert UnixShell.READY_MARKER in script
+    assert script.index("xonshrc_context") < script.index(
+        "_conda_spawn_pre_cmdloop_fire(**kwargs)"
+    )
+    assert script.index("_conda_spawn_pre_cmdloop_fire(**kwargs)") < script.index(
+        UnixShell.READY_MARKER
+    )

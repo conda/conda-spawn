@@ -1,10 +1,10 @@
 import shutil
 import sys
+from pathlib import Path
 from subprocess import DEVNULL, PIPE, check_output
 
 import pexpect
 import pytest
-
 from conda.base.context import reset_context
 
 from conda_spawn.shell import (
@@ -37,123 +37,284 @@ def test_posix_shell(simple_env):
     proc.sendline("env")
     proc.sendeof()
     out = proc.read().decode()
-    assert "CONDA_SPAWN" in out
+    env_vars = set(out.splitlines())
+    assert "_CONDA_SPAWN=1" in env_vars
+    assert not any(line.startswith("CONDA_SPAWN=") for line in env_vars)
     assert "CONDA_PREFIX" in out
     assert str(simple_env) in out
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Pty's only available on Unix")
-@pytest.mark.skipif(shutil.which("sh") is None, reason="sh not installed")
-def test_posix_shell_uses_init_injection(simple_env, tmp_path, monkeypatch):
+@pytest.mark.skipif(shutil.which("dash") is None, reason="dash not installed")
+def test_posix_shell_uses_native_startup_before_fallback_activation(
+    simple_env, tmp_path, monkeypatch
+):
     home = tmp_path / "home"
     home.mkdir()
-    (home / ".profile").write_text("export CONDA_SPAWN_PROFILE_LOADED=1\n")
-    user_env = tmp_path / "user-env.sh"
-    user_env.write_text("export CONDA_SPAWN_USER_ENV_LOADED=1\n")
+    initial_env = home / "initial-env.sh"
+    initial_env.write_text("export SPAWN_TEST_INITIAL_ENV_LOADED=1\n")
+    profile_env = home / "profile-env.sh"
+    profile_env.write_text("export SPAWN_TEST_USER_ENV_LOADED=1\n")
+    (home / ".profile").write_text(
+        'export SPAWN_TEST_PROFILE_LOADED=1\nENV="$HOME/profile-env.sh"\nexport ENV\n'
+    )
 
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("SHELL", shutil.which("sh") or "sh")
-    monkeypatch.setenv("ENV", str(user_env))
+    monkeypatch.setenv("SHELL", shutil.which("dash") or "dash")
+    monkeypatch.setenv("ENV", str(initial_env))
 
     shell = PosixShell(simple_env)
-    original_write_init_injection = shell.write_init_injection
+    activation_script = shell.script()
+    monkeypatch.setattr(
+        shell,
+        "script",
+        lambda: activation_script + "\nprintf 'SPAWN_TEST_ACTIVATION_RAN\\n'\n",
+    )
+    proc = shell.spawn_tty()
+    startup = (proc.before or b"").decode(errors="replace")
+    assert startup.count("SPAWN_TEST_ACTIVATION_RAN") == 1
 
-    def write_init_injection(script_path):
-        result = original_write_init_injection(script_path)
-        assert result is not None
-        argv, env = result
-        return argv, {**env, "CONDA_SPAWN_INIT_INJECTION": "1"}
+    proc.sendline(
+        'printf "CONDA_PREFIX=%s\\n_CONDA_SPAWN=%s\\n'
+        "SPAWN_TEST_PROFILE_LOADED=%s\\n"
+        "SPAWN_TEST_USER_ENV_LOADED=%s\\n"
+        "SPAWN_TEST_INITIAL_ENV_LOADED=%s\\n"
+        'ENV=%s\\n" "$CONDA_PREFIX" "$_CONDA_SPAWN" '
+        '"$SPAWN_TEST_PROFILE_LOADED" "$SPAWN_TEST_USER_ENV_LOADED" '
+        '"${SPAWN_TEST_INITIAL_ENV_LOADED:-}" "$ENV"'
+    )
+    proc.sendline("dash -i -c 'printf NESTED_SHELL_READY'")
+    proc.expect_exact(b"NESTED_SHELL_READY", timeout=15)
+    nested_startup = (proc.before or b"").decode(errors="replace")
+    assert "SPAWN_TEST_ACTIVATION_RAN" not in nested_startup
+    proc.sendline("printf OUTER_SHELL_READY")
+    proc.expect_exact(b"OUTER_SHELL_READY", timeout=15)
+    out = nested_startup + (proc.before or b"").decode(errors="replace")
+    proc.sendline("exit")
+    proc.expect(pexpect.EOF, timeout=15)
+    out += (proc.before or b"").decode(errors="replace")
 
-    monkeypatch.setattr(shell, "write_init_injection", write_init_injection)
+    assert f"CONDA_PREFIX={simple_env}" in out
+    assert "_CONDA_SPAWN=1" in out
+    assert "SPAWN_TEST_PROFILE_LOADED=1" in out
+    assert "SPAWN_TEST_USER_ENV_LOADED=1" in out
+    assert "SPAWN_TEST_INITIAL_ENV_LOADED=" in out
+    assert f"ENV={profile_env}" in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Pty's only available on Unix")
+@pytest.mark.skipif(shutil.which("dash") is None, reason="dash not installed")
+def test_posix_profile_can_unset_env_before_fallback_activation(
+    simple_env, tmp_path, monkeypatch
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    initial_env = home / "initial-env.sh"
+    initial_env.write_text("export SPAWN_TEST_INITIAL_ENV_LOADED=1\n")
+    (home / ".profile").write_text("export SPAWN_TEST_PROFILE_LOADED=1\nunset ENV\n")
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("SHELL", shutil.which("dash") or "dash")
+    monkeypatch.setenv("ENV", str(initial_env))
+
+    shell = PosixShell(simple_env)
     proc = shell.spawn_tty()
     proc.sendline(
-        'printf "CONDA_PREFIX=%s\\nCONDA_SPAWN=%s\\n'
-        "CONDA_SPAWN_INIT_INJECTION=%s\\n"
-        "CONDA_SPAWN_PROFILE_LOADED=%s\\n"
-        'CONDA_SPAWN_USER_ENV_LOADED=%s\\n" "$CONDA_PREFIX" '
-        '"$CONDA_SPAWN" "$CONDA_SPAWN_INIT_INJECTION" '
-        '"$CONDA_SPAWN_PROFILE_LOADED" "$CONDA_SPAWN_USER_ENV_LOADED"'
+        'printf "CONDA_PREFIX=%s\\nSPAWN_TEST_PROFILE_LOADED=%s\\n'
+        'SPAWN_TEST_INITIAL_ENV_LOADED=%s\\nENV_SET=%s\\n" '
+        '"$CONDA_PREFIX" "$SPAWN_TEST_PROFILE_LOADED" '
+        '"${SPAWN_TEST_INITIAL_ENV_LOADED:-}" "${ENV+x}"'
     )
     proc.sendline("exit")
     proc.expect(pexpect.EOF, timeout=15)
     out = (proc.before or b"").decode(errors="replace")
 
     assert f"CONDA_PREFIX={simple_env}" in out
-    assert "CONDA_SPAWN=1" in out
-    assert "CONDA_SPAWN_INIT_INJECTION=1" in out
-    assert "CONDA_SPAWN_PROFILE_LOADED=1" in out
-    assert "CONDA_SPAWN_USER_ENV_LOADED=1" in out
+    assert "SPAWN_TEST_PROFILE_LOADED=1" in out
+    assert "SPAWN_TEST_INITIAL_ENV_LOADED=" in out
+    assert "ENV_SET=" in out
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Pty's only available on Unix")
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not installed")
-def test_bash_shell_uses_init_injection(simple_env, monkeypatch):
-    shell = BashShell(simple_env)
-    original_write_init_injection = shell.write_init_injection
-
-    def write_init_injection(script_path):
-        result = original_write_init_injection(script_path)
-        assert result is not None
-        argv, env = result
-        return argv, {**env, "CONDA_SPAWN_INIT_INJECTION": "1"}
-
-    monkeypatch.setattr(shell, "write_init_injection", write_init_injection)
-    proc = shell.spawn_tty()
-    proc.sendline(
-        'printf "CONDA_PREFIX=%s\\nCONDA_SPAWN=%s\\n'
-        'CONDA_SPAWN_INIT_INJECTION=%s\\n" "$CONDA_PREFIX" '
-        '"$CONDA_SPAWN" "$CONDA_SPAWN_INIT_INJECTION"'
+def test_bash_native_login_startup_before_fallback_activation(
+    simple_env, tmp_path, monkeypatch
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".bash_profile").write_text(
+        f"printf '{UnixShell.READY_MARKER}\\n'\n"
+        "sleep 0.2\n"
+        "printf 'SPAWN_TEST_BASH_PROFILE_LOADED\\n'\n"
+        "SPAWN_TEST_BASH_PROFILE_VAR=profile\n"
+        "spawn_test_profile_func() { printf 'SPAWN_TEST_BASH_FUNCTION\\n'; }\n"
+        "alias spawn_test_profile_alias='echo SPAWN_TEST_BASH_ALIAS'\n"
+        "shopt -s nullglob\n"
+        "PROMPT_COMMAND='echo SPAWN_TEST_PROMPT_COMMAND'\n"
+        '. "$HOME/.bashrc"\n'
     )
-    proc.sendline("exit")
-    proc.expect(pexpect.EOF, timeout=15)
-    out = (proc.before or b"").decode(errors="replace")
+    (home / ".bashrc").write_text("printf 'SPAWN_TEST_BASHRC_LOADED\\n'\n")
+    (home / ".bash_login").write_text("printf 'SPAWN_TEST_BASH_LOGIN_LOADED\\n'\n")
+    (home / ".profile").write_text("printf 'SPAWN_TEST_PROFILE_LOADED\\n'\n")
+    (home / ".bash_logout").write_text("printf 'SPAWN_TEST_BASH_LOGOUT_LOADED\\n'\n")
+    monkeypatch.setenv("HOME", str(home))
 
-    assert f"CONDA_PREFIX={simple_env}" in out
-    assert "CONDA_SPAWN=1" in out
-    assert "CONDA_SPAWN_INIT_INJECTION=1" in out
+    shell = BashShell(simple_env)
+    activation_script = shell.script()
+    monkeypatch.setattr(
+        shell,
+        "script",
+        lambda: activation_script + "\nprintf 'SPAWN_TEST_ACTIVATION_RAN\\n'\n",
+    )
+    activation_paths = []
+    original_source_command = shell.source_command
+
+    def source_command(script_path):
+        activation_paths.append(Path(script_path))
+        return original_source_command(script_path)
+
+    monkeypatch.setattr(shell, "source_command", source_command)
+    proc = shell.spawn_tty()
+    startup = (proc.before or b"").decode(errors="replace")
+    assert "SPAWN_TEST_BASH_PROFILE_LOADED" in startup
+    assert UnixShell.READY_MARKER in startup
+    assert "SPAWN_TEST_BASHRC_LOADED" in startup
+    assert "SPAWN_TEST_BASH_LOGIN_LOADED" not in startup
+    assert "SPAWN_TEST_PROFILE_LOADED" not in startup
+    assert startup.count("SPAWN_TEST_ACTIVATION_RAN") == 1
+    assert "SPAWN_TEST_PROMPT_COMMAND" in startup
+    assert len(activation_paths) == 1
+    assert not activation_paths[0].exists()
+
+    proc.sendline(
+        'printf "CONDA_PREFIX=%s\\n_CONDA_SPAWN=%s\\nPROFILE_VAR=%s\\n" '
+        '"$CONDA_PREFIX" "$_CONDA_SPAWN" "$SPAWN_TEST_BASH_PROFILE_VAR"'
+    )
+    proc.sendline("spawn_test_profile_func")
+    proc.sendline("spawn_test_profile_alias")
+    proc.sendline("shopt -q login_shell && printf 'SPAWN_TEST_LOGIN_SHELL\\n'")
+    proc.sendline("shopt -q nullglob && printf 'SPAWN_TEST_NULLGLOB\\n'")
+    proc.sendline("printf 'SPAWN_TEST_BASH_%s' STATE_DONE")
+    proc.expect_exact(b"SPAWN_TEST_BASH_STATE_DONE", timeout=15)
+    state = (proc.before or b"").decode(errors="replace")
+    proc.sendline("logout")
+    proc.expect(pexpect.EOF, timeout=15)
+    logout = (proc.before or b"").decode(errors="replace")
+
+    assert f"CONDA_PREFIX={simple_env}" in state
+    assert "_CONDA_SPAWN=1" in state
+    assert "PROFILE_VAR=profile" in state
+    assert "SPAWN_TEST_BASH_FUNCTION" in state
+    assert "SPAWN_TEST_BASH_ALIAS" in state
+    assert "SPAWN_TEST_LOGIN_SHELL" in state
+    assert "SPAWN_TEST_NULLGLOB" in state
+    assert "SPAWN_TEST_BASH_LOGOUT_LOADED" in logout
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Pty's only available on Unix")
 @pytest.mark.skipif(shutil.which("zsh") is None, reason="zsh not installed")
-def test_zsh_shell_uses_init_injection(simple_env, tmp_path, monkeypatch):
-    user_zdotdir = tmp_path / "user-zdotdir"
-    user_zdotdir.mkdir()
-    (user_zdotdir / ".zprofile").write_text("export CONDA_SPAWN_ZPROFILE_LOADED=1\n")
-    (user_zdotdir / ".zshrc").write_text("export CONDA_SPAWN_ZSHRC_LOADED=1\n")
-    (user_zdotdir / ".zlogin").write_text("export CONDA_SPAWN_ZLOGIN_LOADED=1\n")
-    monkeypatch.setenv("ZDOTDIR", str(user_zdotdir))
+def test_zsh_native_startup_precedes_fallback_activation(
+    simple_env, tmp_path, monkeypatch
+):
+    home = tmp_path / "home"
+    user_zdotdir = home / ".config" / "zsh"
+    user_zdotdir.mkdir(parents=True)
+    (home / ".zshenv").write_text(
+        'export ZDOTDIR="$HOME/.config/zsh"\nprint -r -- SPAWN_TEST_ZSHENV_LOADED\n'
+    )
+    (user_zdotdir / ".zprofile").write_text("print -r -- SPAWN_TEST_ZPROFILE_LOADED\n")
+    (user_zdotdir / ".zshrc").write_text("print -r -- SPAWN_TEST_ZSHRC_LOADED\n")
+    (user_zdotdir / ".zlogin").write_text("print -r -- SPAWN_TEST_ZLOGIN_LOADED\n")
+    (user_zdotdir / ".zlogout").write_text("print -r -- SPAWN_TEST_ZLOGOUT_LOADED\n")
+    posix_env = tmp_path / "posix-env.sh"
+    posix_env.write_text("print -r -- POSIX_ENV_RAN\n")
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("ZDOTDIR", raising=False)
+    monkeypatch.setenv("ENV", str(posix_env))
 
     shell = ZshShell(simple_env)
-    original_write_init_injection = shell.write_init_injection
-
-    def write_init_injection(script_path):
-        result = original_write_init_injection(script_path)
-        assert result is not None
-        argv, env = result
-        return argv, {**env, "CONDA_SPAWN_INIT_INJECTION": "1"}
-
-    monkeypatch.setattr(shell, "write_init_injection", write_init_injection)
+    activation_script = shell.script()
+    monkeypatch.setattr(
+        shell,
+        "script",
+        lambda: activation_script + "\nprint -r -- SPAWN_TEST_ACTIVATION_RAN\n",
+    )
     proc = shell.spawn_tty()
+    startup = (proc.before or b"").decode(errors="replace")
+    assert "SPAWN_TEST_ZSHENV_LOADED" in startup
+    assert "SPAWN_TEST_ZPROFILE_LOADED" in startup
+    assert "SPAWN_TEST_ZSHRC_LOADED" in startup
+    assert "SPAWN_TEST_ZLOGIN_LOADED" in startup
+    assert startup.count("SPAWN_TEST_ACTIVATION_RAN") == 1
+    assert "POSIX_ENV_RAN" not in startup
+
     proc.sendline(
-        'printf "CONDA_PREFIX=%s\\nCONDA_SPAWN=%s\\n'
-        "CONDA_SPAWN_INIT_INJECTION=%s\\n"
-        "CONDA_SPAWN_ZPROFILE_LOADED=%s\\n"
-        "CONDA_SPAWN_ZSHRC_LOADED=%s\\n"
-        'CONDA_SPAWN_ZLOGIN_LOADED=%s\\n" "$CONDA_PREFIX" '
-        '"$CONDA_SPAWN" "$CONDA_SPAWN_INIT_INJECTION" '
-        '"$CONDA_SPAWN_ZPROFILE_LOADED" "$CONDA_SPAWN_ZSHRC_LOADED" '
-        '"$CONDA_SPAWN_ZLOGIN_LOADED"'
+        'print -r -- "CONDA_PREFIX=$CONDA_PREFIX" '
+        '"_CONDA_SPAWN=$_CONDA_SPAWN" '
+        '"PROMPT_ZDOTDIR=${ZDOTDIR-<unset>}"'
+    )
+    proc.sendline("zsh -dlic 'print -r -- NESTED_SHELL_READY'")
+    proc.expect_exact(b"NESTED_SHELL_READY", timeout=15)
+    nested_startup = (proc.before or b"").decode(errors="replace")
+    assert "SPAWN_TEST_ACTIVATION_RAN" not in nested_startup
+    proc.sendline("print -r -- OUTER_SHELL_READY")
+    proc.expect_exact(b"OUTER_SHELL_READY", timeout=15)
+    after_nested = (proc.before or b"").decode(errors="replace")
+    assert "SPAWN_TEST_ZLOGOUT_LOADED" in after_nested
+    proc.sendline("exit")
+    proc.expect(pexpect.EOF, timeout=15)
+    out = nested_startup + after_nested + (proc.before or b"").decode(errors="replace")
+
+    assert f"CONDA_PREFIX={simple_env}" in out
+    assert "_CONDA_SPAWN=1" in out
+    assert f"PROMPT_ZDOTDIR={user_zdotdir}" in out
+    assert "SPAWN_TEST_ZLOGOUT_LOADED" in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Pty's only available on Unix")
+@pytest.mark.skipif(shutil.which("zsh") is None, reason="zsh not installed")
+def test_zsh_rcs_setting_and_unset_zdotdir_survive_fallback_activation(
+    simple_env, tmp_path, monkeypatch
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".zshenv").write_text(
+        "print -r -- SPAWN_TEST_ZSHENV_LOADED\nunsetopt RCS\n"
+    )
+    (home / ".zprofile").write_text("print -r -- SPAWN_TEST_ZPROFILE_SHOULD_NOT_RUN\n")
+    (home / ".zshrc").write_text("print -r -- SPAWN_TEST_ZSHRC_SHOULD_NOT_RUN\n")
+    (home / ".zlogin").write_text("print -r -- SPAWN_TEST_ZLOGIN_SHOULD_NOT_RUN\n")
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("ZDOTDIR", raising=False)
+
+    shell = ZshShell(simple_env)
+    activation_script = shell.script()
+    monkeypatch.setattr(
+        shell,
+        "script",
+        lambda: activation_script + "\nprint -r -- SPAWN_TEST_ACTIVATION_RAN\n",
+    )
+    proc = shell.spawn_tty()
+    startup = (proc.before or b"").decode(errors="replace")
+    assert "SPAWN_TEST_ZSHENV_LOADED" in startup
+    assert "SPAWN_TEST_ZPROFILE_SHOULD_NOT_RUN" not in startup
+    assert "SPAWN_TEST_ZSHRC_SHOULD_NOT_RUN" not in startup
+    assert "SPAWN_TEST_ZLOGIN_SHOULD_NOT_RUN" not in startup
+    assert startup.count("SPAWN_TEST_ACTIVATION_RAN") == 1
+
+    proc.sendline(
+        'print -r -- "CONDA_PREFIX=$CONDA_PREFIX" '
+        '"RCS_STATE=$options[rcs]" "ZDOTDIR_SET=${+ZDOTDIR}"'
     )
     proc.sendline("exit")
     proc.expect(pexpect.EOF, timeout=15)
     out = (proc.before or b"").decode(errors="replace")
 
     assert f"CONDA_PREFIX={simple_env}" in out
-    assert "CONDA_SPAWN=1" in out
-    assert "CONDA_SPAWN_INIT_INJECTION=1" in out
-    assert "CONDA_SPAWN_ZPROFILE_LOADED=1" in out
-    assert "CONDA_SPAWN_ZSHRC_LOADED=1" in out
-    assert "CONDA_SPAWN_ZLOGIN_LOADED=1" in out
+    assert "RCS_STATE=off" in out
+    assert "ZDOTDIR_SET=0" in out
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Pty's only available on Unix")
@@ -186,7 +347,8 @@ def test_posix_shell_ready_marker_synchronization(simple_env, request):
     # expect_exact() leaves the matched literal in child.after; if
     # someone removes the marker sync this assertion fails loudly
     # instead of regressing to the old racy os.read()-based approach.
-    assert proc.after == marker.encode()
+    assert proc.after.startswith(marker.encode())
+    assert proc.after != marker.encode()
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Powershell only tested on Windows")
@@ -198,7 +360,7 @@ def test_powershell(simple_env):
         out, _ = proc.communicate(timeout=30)
         proc.kill()
         assert not proc.poll()
-        assert "CONDA_SPAWN" in out
+        assert "_CONDA_SPAWN" in out
         assert "CONDA_PREFIX" in out
         assert str(simple_env) in out
 
@@ -210,7 +372,7 @@ def test_cmd(simple_env):
         out, _ = proc.communicate(timeout=5)
         proc.kill()
         assert not proc.poll()
-        assert "CONDA_SPAWN" in out
+        assert "_CONDA_SPAWN" in out
         assert "CONDA_PREFIX" in out
         assert str(simple_env) in out
 
@@ -364,9 +526,9 @@ def test_unix_shell_is_abstract_enough_to_require_subclass(simple_env):
 @pytest.mark.parametrize(
     "cls, expected",
     [
-        (BashShell, True),
-        (PosixShell, True),
-        (ZshShell, True),
+        (BashShell, False),
+        (PosixShell, False),
+        (ZshShell, False),
     ],
     ids=lambda x: x.__name__ if isinstance(x, type) else repr(x),
 )
@@ -374,60 +536,33 @@ def test_supports_init_injection(cls, expected):
     assert cls.supports_init_injection is expected
 
 
-def test_posix_write_init_injection(simple_env, monkeypatch):
-    monkeypatch.setenv("SHELL", "/bin/sh")
-    shell = PosixShell(simple_env)
-    result = shell.write_init_injection("/tmp/script.sh")
-    assert result is not None
-    argv, env = result
-    assert argv == ()
-    assert env == {"ENV": "/tmp/script.sh"}
-
-
-def test_posix_write_init_injection_falls_back_for_non_env_shell(
-    simple_env, monkeypatch
-):
-    monkeypatch.setenv("SHELL", "/bin/zsh")
-    shell = PosixShell(simple_env)
+@pytest.mark.parametrize("cls", [PosixShell, BashShell, ZshShell])
+def test_posix_family_write_init_injection_falls_back(cls, simple_env):
+    shell = cls(simple_env)
     assert shell.write_init_injection("/tmp/script.sh") is None
-
-
-def test_bash_write_init_injection(simple_env):
-    shell = BashShell(simple_env)
-    result = shell.write_init_injection("/tmp/script.sh")
-    assert result is not None
-    argv, env = result
-    assert argv == ("--rcfile", "/tmp/script.sh")
-    assert env == {}
-
-
-def test_zsh_write_init_injection(simple_env):
-    shell = ZshShell(simple_env)
-    result = shell.write_init_injection("/tmp/script.sh")
-    assert result is not None
-    argv, env = result
-    assert argv == ()
-    assert "ZDOTDIR" in env
-    assert "CONDA_SPAWN_ORIGINAL_ZDOTDIR" in env
-
-
-def test_bash_user_rc_preamble(simple_env):
-    shell = BashShell(simple_env)
-    preamble = shell.user_rc_preamble()
-    assert "/etc/profile" in preamble
-    assert ".bash_profile" in preamble
-    assert ".bash_login" in preamble
-    assert ".profile" in preamble
-    assert ".bashrc" not in preamble
-
-
-def test_bash_spawn_script_includes_preamble(simple_env):
-    shell = BashShell(simple_env)
-    script = shell.spawn_script()
-    assert script.startswith("[ -r /etc/profile ]")
-    assert UnixShell.READY_MARKER in script
 
 
 def test_bash_default_args(simple_env):
     shell = BashShell(simple_env)
-    assert shell.args() == ("-i",)
+    assert shell.args() == ("-l", "-i")
+
+
+def test_shell_env_sets_private_spawn_marker(simple_env):
+    env = PosixShell(simple_env).env()
+    assert env["_CONDA_SPAWN"] == "1"
+
+
+def test_shell_cleanup_removes_registered_paths(simple_env, tmp_path):
+    temp_file = tmp_path / "activation.sh"
+    temp_file.write_text("")
+    temp_dir = tmp_path / "startup"
+    temp_dir.mkdir()
+    shell = PosixShell(simple_env)
+    shell._files_to_remove.extend((str(temp_file), str(temp_dir)))
+
+    shell.cleanup()
+    shell.cleanup()
+
+    assert not temp_file.exists()
+    assert not temp_dir.exists()
+    assert shell._files_to_remove == []

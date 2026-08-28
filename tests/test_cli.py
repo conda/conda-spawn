@@ -52,18 +52,18 @@ def test_alias_registration_without_aliases_parameter(monkeypatch):
 
 
 def test_shell_alias(monkeypatch, conda_cli):
-    monkeypatch.delenv("CONDA_SPAWN", raising=False)
+    monkeypatch.delenv("_CONDA_SPAWN", raising=False)
     args = (sys.prefix, "--hook", "--shell", "posix")
     assert conda_cli("shell", *args) == conda_cli("spawn", *args)
 
 
 def test_nesting_disallowed(monkeypatch, conda_cli):
-    monkeypatch.setenv("CONDA_SPAWN", "1")
+    monkeypatch.setenv("_CONDA_SPAWN", "1")
     conda_cli("spawn", sys.prefix, "--hook", raises=CondaError)
 
 
 def test_nesting_replace(monkeypatch, conda_cli):
-    monkeypatch.setenv("CONDA_SPAWN", "1")
+    monkeypatch.setenv("_CONDA_SPAWN", "1")
     out, err, rc = conda_cli("spawn", sys.prefix, "--hook", "--replace")
     assert sys.prefix in out
     assert not err
@@ -71,7 +71,7 @@ def test_nesting_replace(monkeypatch, conda_cli):
 
 
 def test_nesting_stack(monkeypatch, conda_cli):
-    monkeypatch.setenv("CONDA_SPAWN", "1")
+    monkeypatch.setenv("_CONDA_SPAWN", "1")
     out, err, rc = conda_cli("spawn", sys.prefix, "--hook", "--stack")
     assert sys.prefix in out
     assert not err

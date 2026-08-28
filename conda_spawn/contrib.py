@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import shlex
+from textwrap import indent
 from typing import ClassVar
 
 from . import activate
@@ -86,10 +87,10 @@ class CshShell(UnixShell):
     def source_command(self, script_path: str) -> str:
         return f'source "{script_path}"'
 
-    def ready_marker_command(self) -> str:
+    def ready_marker_command(self, ready_marker: str | None = None) -> str:
         # csh does not ship a `printf` builtin; `echo -n` is portable
         # across csh/tcsh on the platforms we support.
-        return f'echo -n "{self.READY_MARKER}"'
+        return f'echo -n "{ready_marker or self.READY_MARKER}"'
 
     def executable(self) -> str:
         return "csh"
@@ -121,7 +122,7 @@ class XonshShell(UnixShell):
     default_args = ("-i",)
     # xonsh's readline/prompt_toolkit backend discards pending PTY input
     # on startup, so the sendline fallback silently loses the activation
-    # script.  Using --rc injects it during xonsh's own rc-file loading.
+    # script. Using --rc avoids sending the script through the PTY.
     supports_init_injection: ClassVar[bool] = True
 
     @property
@@ -131,20 +132,41 @@ class XonshShell(UnixShell):
         # `.xsh` is the canonical extension for xonsh scripts.
         return ".xsh"
 
-    def user_rc_preamble(self) -> str:
+    def _user_rc_loader(self) -> str:
         # --rc replaces xonsh's default rc discovery, so run xonsh's own
-        # rc loader before the activation script to preserve startup order.
+        # rc loader and preserve the loaded-file list for user handlers.
         return (
             "from xonsh.environ import xonshrc_context as "
             "_conda_spawn_xonshrc_context\n"
-            "_conda_spawn_xonshrc_context(\n"
+            "_conda_spawn_user_rc_files = _conda_spawn_xonshrc_context(\n"
             '    rcfiles=${...}.get("XONSHRC"),\n'
             '    rcdirs=${...}.get("XONSHRC_DIR"),\n'
             "    execer=__xonsh__.execer,\n"
             "    ctx=__xonsh__.ctx,\n"
             "    env=__xonsh__.env,\n"
             ")\n"
-            "del _conda_spawn_xonshrc_context"
+            "del _conda_spawn_xonshrc_context\n"
+            "_conda_spawn_post_rc_fire = events.on_post_rc.fire\n"
+            "def _conda_spawn_fire_post_rc(**kwargs):\n"
+            "    __xonsh__.rc_files = _conda_spawn_user_rc_files\n"
+            "    events.on_post_rc.fire = _conda_spawn_post_rc_fire\n"
+            "    return _conda_spawn_post_rc_fire(**kwargs)\n"
+            "events.on_post_rc.fire = _conda_spawn_fire_post_rc"
+        )
+
+    def spawn_script(self, ready_marker: str | None = None) -> str:
+        # Wrap on_pre_cmdloop.fire so every user handler completes before
+        # activation and the ready marker, independent of handler order.
+        activation_script = super().spawn_script(ready_marker)
+        return (
+            f"{self._user_rc_loader()}\n"
+            "_conda_spawn_pre_cmdloop_fire = events.on_pre_cmdloop.fire\n"
+            "def _conda_spawn_fire_pre_cmdloop(**kwargs):\n"
+            "    events.on_pre_cmdloop.fire = _conda_spawn_pre_cmdloop_fire\n"
+            "    _conda_spawn_result = _conda_spawn_pre_cmdloop_fire(**kwargs)\n"
+            f"{indent(activation_script, '    ')}"
+            "    return _conda_spawn_result\n"
+            "events.on_pre_cmdloop.fire = _conda_spawn_fire_pre_cmdloop\n"
         )
 
     def write_init_injection(
@@ -177,8 +199,8 @@ class XonshShell(UnixShell):
         # explicit `$[...]` form is unambiguous inside a sourced script.
         return "$[stty echo]"
 
-    def ready_marker_command(self) -> str:
-        return f'print({self.READY_MARKER!r}, end="", flush=True)'
+    def ready_marker_command(self, ready_marker: str | None = None) -> str:
+        return f'print({ready_marker or self.READY_MARKER!r}, end="", flush=True)'
 
     def executable(self) -> str:
         return "xonsh"

@@ -9,10 +9,10 @@ import os
 from textwrap import dedent
 
 from conda.base.context import locate_prefix_by_name
-from conda.exceptions import CondaError, ArgumentError, EnvironmentLocationNotFound
 from conda.cli.conda_argparse import (
     add_parser_help,
 )
+from conda.exceptions import ArgumentError, CondaError, EnvironmentLocationNotFound
 
 
 def configure_parser(parser: argparse.ArgumentParser):
@@ -77,19 +77,16 @@ def configure_parser(parser: argparse.ArgumentParser):
 def execute(args: argparse.Namespace) -> int:
     from .main import (
         hook,
-        spawn,
         shell_specifier_to_shell,
+        spawn,
     )
 
     if args.stack and args.replace:
         raise ArgumentError(
             "--stack and --replace are mutually exclusive. Choose only one."
         )
-    if (
-        os.getenv("CONDA_SPAWN", "0") not in ("", "0")
-        and not args.replace
-        and not args.stack
-    ):
+    active_spawn = os.getenv("_CONDA_SPAWN", "0") not in ("", "0")
+    if active_spawn and not args.replace and not args.stack:
         if current_env := os.getenv("CONDA_PREFIX"):
             env_info = f" for environment '{current_env}'"
         else:

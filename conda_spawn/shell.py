@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import os
+import secrets
 import shlex
 import shutil
 import signal
-import subprocess
 import struct
+import subprocess
 import sys
-from tempfile import NamedTemporaryFile, mkdtemp
+from collections.abc import Iterable
 from logging import getLogger
 from pathlib import Path
-from typing import ClassVar, Iterable
+from tempfile import NamedTemporaryFile
+from typing import ClassVar
 
 if sys.platform != "win32":
     import fcntl
@@ -22,7 +24,6 @@ from conda.base.context import context
 from conda.common.compat import on_win
 
 from . import activate
-
 
 log = getLogger(f"conda.{__name__}")
 
@@ -68,15 +69,19 @@ class Shell:
 
     def env(self) -> dict[str, str]:
         env = os.environ.copy()
-        env["CONDA_SPAWN"] = "1"
+        # Keep the internal marker out of conda's public CONDA_* namespace.
+        env["_CONDA_SPAWN"] = "1"
         return env
 
-    def __del__(self):
+    def cleanup(self) -> None:
+        """Remove temporary files created for this shell."""
         # `__init__` may have failed before `_files_to_remove` was set
         # (e.g. if a subclass forgot to declare `Activator`). Guard
         # against that so the interpreter does not emit a spurious
         # AttributeError during garbage collection.
-        for path in getattr(self, "_files_to_remove", ()):
+        paths = getattr(self, "_files_to_remove", ())
+        self._files_to_remove = []
+        for path in paths:
             try:
                 if os.path.isdir(path):
                     shutil.rmtree(path)
@@ -84,6 +89,10 @@ class Shell:
                     os.unlink(path)
             except OSError as exc:
                 log.debug("Could not delete %s", path, exc_info=exc)
+                self._files_to_remove.append(path)
+
+    def __del__(self):
+        self.cleanup()
 
 
 class UnixShell(Shell):
@@ -98,15 +107,14 @@ class UnixShell(Shell):
     default_shell: str = "/bin/sh"
     default_args: tuple[str, ...] = ("-l", "-i")
     # When True, the shell supports passing the activation script via
-    # a shell-specific startup mechanism (e.g. POSIX ENV, bash --rcfile,
-    # zsh ZDOTDIR, fish -C, xonsh --rc) instead of a separate sendline
-    # after startup.  This eliminates a PTY round-trip and avoids race
-    # conditions with shells that discard typeahead input (like xonsh's
-    # readline backend).
+    # a shell-specific startup mechanism (e.g. fish -C or xonsh --rc)
+    # instead of a separate sendline after startup. This
+    # eliminates a PTY round-trip and avoids races with shells that
+    # discard typeahead input (like xonsh's readline backend).
     supports_init_injection: ClassVar[bool] = False
 
-    # Sentinel printed after activation to reliably detect when the
-    # spawned shell is ready. Everything before this marker (including
+    # Prefix for the per-spawn sentinel printed after activation. Everything
+    # before the complete marker (including
     # any initial prompt rendered with stale env vars) is consumed
     # before `interact()` starts, preventing a duplicate prompt.
     READY_MARKER = "__CONDA_SPAWN_READY__"
@@ -137,7 +145,7 @@ class UnixShell(Shell):
         ]
         return "".join(lines)
 
-    def spawn_script(self) -> str:
+    def spawn_script(self, ready_marker: str | None = None) -> str:
         """
         Full contents of the temp file the spawned shell will source:
         activation + prompt setup + post-activation command + ready
@@ -146,15 +154,11 @@ class UnixShell(Shell):
         xonsh Python statements) run without having to fit into one
         `sendline` call.
         """
-        parts = []
-        preamble = self.user_rc_preamble()
-        if preamble:
-            parts.append(preamble)
-        parts.append(self.script())
+        parts = [self.script()]
         for extra in (
             self.prompt(),
             self.post_activation_command(),
-            self.ready_marker_command(),
+            self.ready_marker_command(ready_marker),
         ):
             if extra:
                 parts.append(extra)
@@ -182,17 +186,9 @@ class UnixShell(Shell):
         """Run after activation; re-enables terminal echo by default."""
         return "stty echo"
 
-    def ready_marker_command(self) -> str:
+    def ready_marker_command(self, ready_marker: str | None = None) -> str:
         """Print the ready marker with no trailing newline."""
-        return f"printf {self.READY_MARKER}"
-
-    def user_rc_preamble(self) -> str:
-        """Preamble sourcing the user's normal rc files.
-
-        Shells that use init injection override this so the activation
-        script re-creates the login/interactive startup the user expects.
-        """
-        return ""
+        return f"printf {ready_marker or self.READY_MARKER}"
 
     def write_init_injection(
         self, script_path: str
@@ -213,6 +209,7 @@ class UnixShell(Shell):
             child.setwinsize(a[0], a[1])
 
         size = shutil.get_terminal_size()
+        ready_marker = f"{self.READY_MARKER}{secrets.token_hex(16)}"
 
         try:
             with NamedTemporaryFile(
@@ -221,18 +218,19 @@ class UnixShell(Shell):
                 delete=False,
                 mode="w",
             ) as f:
-                f.write(self.spawn_script())
+                script_path = f.name
+                self._files_to_remove.append(script_path)
+                f.write(self.spawn_script(ready_marker))
 
             injection = (
-                self.write_init_injection(f.name)
+                self.write_init_injection(script_path)
                 if self.supports_init_injection
                 else None
             )
 
             if injection is not None:
-                # Fast path: pass the activation script on the command line
-                # (e.g. bash --rcfile script.sh -i).  GNU long options must
-                # come before short options for bash to accept them.
+                # Fast path: pass the activation script through the shell's
+                # documented startup option.
                 extra_argv, extra_env = injection
                 env = self.env()
                 env.update(extra_env)
@@ -255,27 +253,25 @@ class UnixShell(Shell):
                     echo=False,
                     dimensions=(size.lines, size.columns),
                 )
-                child.sendline(self.source_command(f.name))
+                child.sendline(self.source_command(script_path))
 
             signal.signal(signal.SIGWINCH, resize_child)
-            child.expect_exact(self.READY_MARKER)
+            child.expect_exact(ready_marker)
+            self.cleanup()
             if command:
                 child.sendline(shlex.join(command))
             if sys.stdin.isatty():
                 child.interact()
             return child
-        finally:
-            self._files_to_remove.append(f.name)
+        except BaseException:
+            self.cleanup()
+            raise
 
 
 class PosixShell(UnixShell):
     Activator = activate.PosixActivator
     default_shell = "/bin/sh"
     prompt_strip_markers = ("PS1=",)
-    supports_init_injection: ClassVar[bool] = True
-    env_init_shells: ClassVar[frozenset[str]] = frozenset(
-        {"ash", "dash", "ksh", "mksh", "sh", "yash"}
-    )
 
     def prompt(self) -> str:
         return f'PS1="{self.prompt_modifier()}${{PS1:-}}"'
@@ -283,86 +279,15 @@ class PosixShell(UnixShell):
     def source_command(self, script_path: str) -> str:
         return f'. "{script_path}"'
 
-    def user_rc_preamble(self) -> str:
-        original_env = os.environ.get("ENV")
-        if not original_env:
-            return ""
-        original_env = os.path.expanduser(os.path.expandvars(original_env))
-        quoted_original_env = shlex.quote(original_env)
-        return f"if [ -r {quoted_original_env} ]; then\n  . {quoted_original_env}\nfi"
-
-    def write_init_injection(
-        self, script_path: str
-    ) -> tuple[tuple[str, ...], dict[str, str]] | None:
-        if Path(self.executable()).name not in self.env_init_shells:
-            return None
-        return ((), {"ENV": script_path})
-
 
 class BashShell(PosixShell):
-    # Drop -l (login): bash ignores --rcfile in login mode.  The
-    # user_rc_preamble manually sources the login files instead.
-    default_args: tuple[str, ...] = ("-i",)
-    supports_init_injection: ClassVar[bool] = True
-
     def executable(self):
         return "bash"
 
-    def user_rc_preamble(self) -> str:
-        # Replicate bash's login-shell startup sequence since --rcfile
-        # requires non-login mode.  Sources /etc/profile, then the first
-        # of ~/.bash_profile / ~/.bash_login / ~/.profile that exists.
-        # ~/.bashrc is deliberately omitted: the profile files source it
-        # if the user wants it (most distros' .bash_profile does).
-        return (
-            "[ -r /etc/profile ] && . /etc/profile\n"
-            'for f in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do\n'
-            '  if [ -r "$f" ]; then . "$f"; break; fi\n'
-            "done"
-        )
-
-    def write_init_injection(
-        self, script_path: str
-    ) -> tuple[tuple[str, ...], dict[str, str]] | None:
-        return (("--rcfile", script_path), {})
-
 
 class ZshShell(PosixShell):
-    supports_init_injection: ClassVar[bool] = True
-
     def executable(self):
         return "zsh"
-
-    def _zsh_source_original(self, filename: str) -> str:
-        return (
-            'if [ -n "${CONDA_SPAWN_ORIGINAL_ZDOTDIR:-}" ] && '
-            f'[ -r "${{CONDA_SPAWN_ORIGINAL_ZDOTDIR}}/{filename}" ]; then\n'
-            f'  . "${{CONDA_SPAWN_ORIGINAL_ZDOTDIR}}/{filename}"\n'
-            f'elif [ -r "$HOME/{filename}" ]; then\n'
-            f'  . "$HOME/{filename}"\n'
-            "fi\n"
-        )
-
-    def write_init_injection(
-        self, script_path: str
-    ) -> tuple[tuple[str, ...], dict[str, str]] | None:
-        zdotdir = Path(mkdtemp(prefix="conda-spawn-zdotdir-"))
-        self._files_to_remove.append(str(zdotdir))
-
-        (zdotdir / ".zshenv").write_text(self._zsh_source_original(".zshenv"))
-        (zdotdir / ".zprofile").write_text(self._zsh_source_original(".zprofile"))
-        (zdotdir / ".zshrc").write_text(self._zsh_source_original(".zshrc"))
-        (zdotdir / ".zlogin").write_text(
-            self._zsh_source_original(".zlogin") + f". {shlex.quote(script_path)}\n"
-        )
-
-        return (
-            (),
-            {
-                "ZDOTDIR": str(zdotdir),
-                "CONDA_SPAWN_ORIGINAL_ZDOTDIR": os.environ.get("ZDOTDIR", ""),
-            },
-        )
 
 
 class PowershellShell(Shell):
@@ -378,6 +303,8 @@ class PowershellShell(Shell):
                 delete=False,
                 mode="w",
             ) as f:
+                script_path = f.name
+                self._files_to_remove.append(script_path)
                 f.write(f"{self.script()}\r\n")
                 f.write(f"{self.prompt()}\r\n")
                 if command:
@@ -385,15 +312,19 @@ class PowershellShell(Shell):
                     f.write(f"echo {command}\r\n")
                     f.write(f"{command}\r\n")
             return subprocess.Popen(
-                [self.executable(), *self.args(), f.name], env=self.env(), **kwargs
+                [self.executable(), *self.args(), script_path], env=self.env(), **kwargs
             )
-        finally:
-            self._files_to_remove.append(f.name)
+        except BaseException:
+            self.cleanup()
+            raise
 
     def spawn(self, command: Iterable[str] | None = None) -> int:
-        proc = self.spawn_popen(command)
-        proc.communicate()
-        return proc.wait()
+        try:
+            proc = self.spawn_popen(command)
+            proc.communicate()
+            return proc.wait()
+        finally:
+            self.cleanup()
 
     def script(self) -> str:
         script = self._activator.execute()
