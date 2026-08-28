@@ -11,9 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Enhancements
 
-
-
-
 * Add `conda shell` as an alias for `conda spawn`. (#59)
 
 ### Bug fixes
@@ -24,39 +21,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compatible after conda removes the deprecated `conda.plugins` re-export.
   (#38)
 
-
-
-### Deprecations
-
-
-
-
-
-
-### Docs
-
-
-
-
-
-
 ### Other
-
-
 
 * Use conda's activator classes directly and retain only conda-spawn's `PATH`
   and environment-variable changes. (#45)
-* Enable infrastructure-managed Dependabot configuration via conda/infrastructure templates. (#47)
-
+* Enable infrastructure-managed Dependabot configuration via
+  conda/infrastructure templates. (#47)
 
 ### Contributors
 
-* @danyeaw
+* @danyeaw made their first contribution in https://github.com/conda/conda-spawn/pull/44
 * @jezdez
-* @conda-bot
+* @conda-bot made their first contribution in https://github.com/conda/conda-spawn/pull/43
 * @dependabot[bot]
-
-
 
 ## [0.1.0] - 2026-04-29
 
