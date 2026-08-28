@@ -5,9 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+[//]: # (current developments)
 
-> Check the [latest release](https://github.com/conda-incubator/conda-spawn/releases/latest) and click on the "XX commits to main since this release" link to see the full diff.
+## 0.2.0 (2026-08-28)
+
+### Enhancements
+
+* Add `conda shell` as an alias for `conda spawn`. (#59)
+
+### Bug fixes
+
+* Ensure spawned PowerShell sessions call `conda.exe` instead of the no-op
+  `conda.bat` when running `conda activate` or `conda deactivate`. (#35)
+* Import `CondaSubcommand` from `conda.plugins.types` so conda-spawn remains
+  compatible after conda removes the deprecated `conda.plugins` re-export.
+  (#38)
+
+### Other
+
+* Use conda's activator classes directly and retain only conda-spawn's `PATH`
+  and environment-variable changes. (#45)
+* Enable infrastructure-managed Dependabot configuration via
+  conda/infrastructure templates. (#47)
+
+### Contributors
+
+* @danyeaw made their first contribution in https://github.com/conda/conda-spawn/pull/44
+* @jezdez
+* @conda-bot made their first contribution in https://github.com/conda/conda-spawn/pull/43
+* @dependabot[bot]
 
 ## [0.1.0] - 2026-04-29
 
