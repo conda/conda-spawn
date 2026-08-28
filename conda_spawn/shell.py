@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import os
 import secrets
 import shlex
@@ -24,8 +25,32 @@ from conda.base.context import context
 from conda.common.compat import on_win
 
 from . import activate
+from .constants import CONDA_SPAWN_ENV_VAR
 
 log = getLogger(f"conda.{__name__}")
+
+_PENDING_CLEANUP_PATHS: set[str] = set()
+
+
+def _remove_path(path: str) -> bool:
+    try:
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        else:
+            os.unlink(path)
+    except FileNotFoundError:
+        return True
+    except OSError as exc:
+        log.debug("Could not delete %s", path, exc_info=exc)
+        return False
+    return True
+
+
+@atexit.register
+def _cleanup_pending_paths() -> None:
+    for path in tuple(_PENDING_CLEANUP_PATHS):
+        if _remove_path(path):
+            _PENDING_CLEANUP_PATHS.discard(path)
 
 
 class Shell:
@@ -40,7 +65,7 @@ class Shell:
             self._activator_args.append("--stack")
         self._activator_args.append(str(prefix))
         self._activator = self.Activator(self._activator_args)
-        self._files_to_remove = []
+        self._files_to_remove: list[str] = []
 
     def spawn(self, prefix: Path) -> int:
         """
@@ -70,29 +95,22 @@ class Shell:
     def env(self) -> dict[str, str]:
         env = os.environ.copy()
         # Keep the internal marker out of conda's public CONDA_* namespace.
-        env["_CONDA_SPAWN"] = "1"
+        env[CONDA_SPAWN_ENV_VAR] = "1"
         return env
+
+    def _register_cleanup_path(self, path: str) -> None:
+        self._files_to_remove.append(path)
+        _PENDING_CLEANUP_PATHS.add(path)
 
     def cleanup(self) -> None:
         """Remove temporary files created for this shell."""
-        # `__init__` may have failed before `_files_to_remove` was set
-        # (e.g. if a subclass forgot to declare `Activator`). Guard
-        # against that so the interpreter does not emit a spurious
-        # AttributeError during garbage collection.
         paths = getattr(self, "_files_to_remove", ())
         self._files_to_remove = []
         for path in paths:
-            try:
-                if os.path.isdir(path):
-                    shutil.rmtree(path)
-                else:
-                    os.unlink(path)
-            except OSError as exc:
-                log.debug("Could not delete %s", path, exc_info=exc)
+            if _remove_path(path):
+                _PENDING_CLEANUP_PATHS.discard(path)
+            else:
                 self._files_to_remove.append(path)
-
-    def __del__(self):
-        self.cleanup()
 
 
 class UnixShell(Shell):
@@ -188,7 +206,13 @@ class UnixShell(Shell):
 
     def ready_marker_command(self, ready_marker: str | None = None) -> str:
         """Print the ready marker with no trailing newline."""
-        return f"printf {ready_marker or self.READY_MARKER}"
+        return f"printf {self._resolve_ready_marker(ready_marker)}"
+
+    def _resolve_ready_marker(self, ready_marker: str | None) -> str:
+        marker = self.READY_MARKER if ready_marker is None else ready_marker
+        if not marker:
+            raise ValueError("ready marker cannot be empty")
+        return marker
 
     def write_init_injection(
         self, script_path: str
@@ -210,6 +234,8 @@ class UnixShell(Shell):
 
         size = shutil.get_terminal_size()
         ready_marker = f"{self.READY_MARKER}{secrets.token_hex(16)}"
+        child = None
+        previous_sigwinch_handler = None
 
         try:
             with NamedTemporaryFile(
@@ -219,7 +245,7 @@ class UnixShell(Shell):
                 mode="w",
             ) as f:
                 script_path = f.name
-                self._files_to_remove.append(script_path)
+                self._register_cleanup_path(script_path)
                 f.write(self.spawn_script(ready_marker))
 
             injection = (
@@ -255,17 +281,25 @@ class UnixShell(Shell):
                 )
                 child.sendline(self.source_command(script_path))
 
-            signal.signal(signal.SIGWINCH, resize_child)
+            previous_sigwinch_handler = signal.signal(signal.SIGWINCH, resize_child)
             child.expect_exact(ready_marker)
-            self.cleanup()
-            if command:
-                child.sendline(shlex.join(command))
-            if sys.stdin.isatty():
-                child.interact()
-            return child
         except BaseException:
-            self.cleanup()
+            if previous_sigwinch_handler is not None:
+                signal.signal(signal.SIGWINCH, previous_sigwinch_handler)
+            if child is not None:
+                try:
+                    child.close(force=True)
+                except Exception as exc:
+                    log.debug("Could not close failed shell startup", exc_info=exc)
             raise
+        finally:
+            self.cleanup()
+
+        if command:
+            child.sendline(shlex.join(command))
+        if sys.stdin.isatty():
+            child.interact()
+        return child
 
 
 class PosixShell(UnixShell):
@@ -304,7 +338,7 @@ class PowershellShell(Shell):
                 mode="w",
             ) as f:
                 script_path = f.name
-                self._files_to_remove.append(script_path)
+                self._register_cleanup_path(script_path)
                 f.write(f"{self.script()}\r\n")
                 f.write(f"{self.prompt()}\r\n")
                 if command:

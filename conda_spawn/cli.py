@@ -14,6 +14,8 @@ from conda.cli.conda_argparse import (
 )
 from conda.exceptions import ArgumentError, CondaError, EnvironmentLocationNotFound
 
+from .constants import CONDA_SPAWN_ENV_VAR
+
 
 def configure_parser(parser: argparse.ArgumentParser):
     from .registry import SHELLS
@@ -85,7 +87,7 @@ def execute(args: argparse.Namespace) -> int:
         raise ArgumentError(
             "--stack and --replace are mutually exclusive. Choose only one."
         )
-    active_spawn = os.getenv("_CONDA_SPAWN", "0") not in ("", "0")
+    active_spawn = os.getenv(CONDA_SPAWN_ENV_VAR, "0") not in ("", "0")
     if active_spawn and not args.replace and not args.stack:
         if current_env := os.getenv("CONDA_PREFIX"):
             env_info = f" for environment '{current_env}'"

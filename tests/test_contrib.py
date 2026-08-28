@@ -271,6 +271,12 @@ def test_csh_family_ready_marker_uses_echo(cls, simple_env):
     assert cls(simple_env).ready_marker_command().startswith("echo -n ")
 
 
+@pytest.mark.parametrize("cls", [CshShell, XonshShell], ids=lambda c: c.__name__)
+def test_contrib_ready_marker_cannot_be_empty(cls, simple_env):
+    with pytest.raises(ValueError, match="ready marker cannot be empty"):
+        cls(simple_env).ready_marker_command("")
+
+
 def test_xonsh_shell_rewrites_del_var(xonsh_shell, monkeypatch):
     """Regression test: bare `del $VAR` raises KeyError on fresh shells.
 

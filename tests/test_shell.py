@@ -1,3 +1,4 @@
+import gc
 import shutil
 import sys
 from pathlib import Path
@@ -7,6 +8,8 @@ import pexpect
 import pytest
 from conda.base.context import reset_context
 
+from conda_spawn import shell as shell_module
+from conda_spawn.constants import CONDA_SPAWN_ENV_VAR
 from conda_spawn.shell import (
     BashShell,
     CmdExeShell,
@@ -549,7 +552,12 @@ def test_bash_default_args(simple_env):
 
 def test_shell_env_sets_private_spawn_marker(simple_env):
     env = PosixShell(simple_env).env()
-    assert env["_CONDA_SPAWN"] == "1"
+    assert env[CONDA_SPAWN_ENV_VAR] == "1"
+
+
+def test_ready_marker_cannot_be_empty(simple_env):
+    with pytest.raises(ValueError, match="ready marker cannot be empty"):
+        PosixShell(simple_env).ready_marker_command("")
 
 
 def test_shell_cleanup_removes_registered_paths(simple_env, tmp_path):
@@ -558,7 +566,8 @@ def test_shell_cleanup_removes_registered_paths(simple_env, tmp_path):
     temp_dir = tmp_path / "startup"
     temp_dir.mkdir()
     shell = PosixShell(simple_env)
-    shell._files_to_remove.extend((str(temp_file), str(temp_dir)))
+    shell._register_cleanup_path(str(temp_file))
+    shell._register_cleanup_path(str(temp_dir))
 
     shell.cleanup()
     shell.cleanup()
@@ -566,3 +575,92 @@ def test_shell_cleanup_removes_registered_paths(simple_env, tmp_path):
     assert not temp_file.exists()
     assert not temp_dir.exists()
     assert shell._files_to_remove == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Pty's only available on Unix")
+def test_unix_shell_startup_failure_closes_child_and_removes_script(
+    simple_env, monkeypatch
+):
+    script_paths = []
+
+    class Child:
+        closed = False
+
+        def sendline(self, command):
+            return None
+
+        def expect_exact(self, marker):
+            raise RuntimeError("startup failed")
+
+        def close(self, force=False):
+            self.closed = force
+
+    child = Child()
+    shell = PosixShell(simple_env)
+    source_command = shell.source_command
+    previous_sigwinch_handler = object()
+    sigwinch_handlers = []
+
+    def capture_source_command(script_path):
+        script_paths.append(Path(script_path))
+        return source_command(script_path)
+
+    def signal_handler(signal_number, handler):
+        assert signal_number == shell_module.signal.SIGWINCH
+        sigwinch_handlers.append(handler)
+        return previous_sigwinch_handler
+
+    monkeypatch.setattr(shell, "source_command", capture_source_command)
+    monkeypatch.setattr(shell_module.pexpect, "spawn", lambda *args, **kwargs: child)
+    monkeypatch.setattr(shell_module.signal, "signal", signal_handler)
+
+    with pytest.raises(RuntimeError, match="startup failed"):
+        shell.spawn_tty()
+
+    assert child.closed is True
+    assert len(sigwinch_handlers) == 2
+    assert sigwinch_handlers[-1] is previous_sigwinch_handler
+    assert len(script_paths) == 1
+    assert not script_paths[0].exists()
+
+
+def test_powershell_spawn_popen_uses_atexit_fallback(simple_env, monkeypatch):
+    script_paths = []
+    process = object()
+
+    def popen(args, **kwargs):
+        script_path = Path(args[-1])
+        assert script_path.exists()
+        script_paths.append(script_path)
+        return process
+
+    monkeypatch.setattr(shell_module.subprocess, "Popen", popen)
+
+    assert PowershellShell(simple_env).spawn_popen() is process
+    gc.collect()
+
+    assert len(script_paths) == 1
+    assert script_paths[0].exists()
+
+    shell_module._cleanup_pending_paths()
+
+    assert not script_paths[0].exists()
+
+
+def test_powershell_spawn_popen_failure_removes_script(simple_env, monkeypatch):
+    script_paths = []
+
+    def popen(args, **kwargs):
+        script_path = Path(args[-1])
+        assert script_path.exists()
+        script_paths.append(script_path)
+        raise OSError("process creation failed")
+
+    monkeypatch.setattr(shell_module.subprocess, "Popen", popen)
+    shell = PowershellShell(simple_env)
+
+    with pytest.raises(OSError, match="process creation failed"):
+        shell.spawn_popen()
+
+    assert len(script_paths) == 1
+    assert not script_paths[0].exists()

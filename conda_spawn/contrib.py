@@ -56,7 +56,8 @@ class FishShell(UnixShell):
     def write_init_injection(
         self, script_path: str
     ) -> tuple[tuple[str, ...], dict[str, str]] | None:
-        return (("-C", f"source {shlex.quote(script_path)}"), {})
+        """Use `fish -C` to save the post-start PTY round trip."""
+        return ("-C", f"source {shlex.quote(script_path)}"), {}
 
     def executable(self) -> str:
         return "fish"
@@ -90,7 +91,7 @@ class CshShell(UnixShell):
     def ready_marker_command(self, ready_marker: str | None = None) -> str:
         # csh does not ship a `printf` builtin; `echo -n` is portable
         # across csh/tcsh on the platforms we support.
-        return f'echo -n "{ready_marker or self.READY_MARKER}"'
+        return f'echo -n "{self._resolve_ready_marker(ready_marker)}"'
 
     def executable(self) -> str:
         return "csh"
@@ -133,8 +134,7 @@ class XonshShell(UnixShell):
         return ".xsh"
 
     def _user_rc_loader(self) -> str:
-        # --rc replaces xonsh's default rc discovery, so run xonsh's own
-        # rc loader and preserve the loaded-file list for user handlers.
+        """Restore normal RC discovery replaced by the injected `--rc` file."""
         return (
             "from xonsh.environ import xonshrc_context as "
             "_conda_spawn_xonshrc_context\n"
@@ -172,7 +172,8 @@ class XonshShell(UnixShell):
     def write_init_injection(
         self, script_path: str
     ) -> tuple[tuple[str, ...], dict[str, str]] | None:
-        return (("--rc", script_path), {})
+        """Use `xonsh --rc` to save a PTY round trip and restore RC discovery."""
+        return ("--rc", script_path), {}
 
     def script(self) -> str:
         # `XonshActivator.unset_var_tmpl` emits `del $VAR` which raises
@@ -200,7 +201,8 @@ class XonshShell(UnixShell):
         return "$[stty echo]"
 
     def ready_marker_command(self, ready_marker: str | None = None) -> str:
-        return f'print({ready_marker or self.READY_MARKER!r}, end="", flush=True)'
+        marker = self._resolve_ready_marker(ready_marker)
+        return f'print({marker!r}, end="", flush=True)'
 
     def executable(self) -> str:
         return "xonsh"
