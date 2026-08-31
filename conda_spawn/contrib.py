@@ -10,6 +10,9 @@ relative to the core supported matrix (`bash`, `zsh`, `powershell`,
 from __future__ import annotations
 
 import re
+import shlex
+from textwrap import indent
+from typing import ClassVar
 
 from . import activate
 from .shell import UnixShell
@@ -26,6 +29,7 @@ class FishShell(UnixShell):
 
     Activator = activate.FishActivator
     default_shell = "fish"
+    supports_init_injection: ClassVar[bool] = True
 
     def prompt(self) -> str:
         # Preserve any pre-existing `fish_prompt` (including ones installed
@@ -48,6 +52,12 @@ class FishShell(UnixShell):
 
     def source_command(self, script_path: str) -> str:
         return f'source "{script_path}"'
+
+    def write_init_injection(
+        self, script_path: str
+    ) -> tuple[tuple[str, ...], dict[str, str]] | None:
+        """Use `fish -C` to save the post-start PTY round trip."""
+        return ("-C", f"source {shlex.quote(script_path)}"), {}
 
     def executable(self) -> str:
         return "fish"
@@ -78,10 +88,10 @@ class CshShell(UnixShell):
     def source_command(self, script_path: str) -> str:
         return f'source "{script_path}"'
 
-    def ready_marker_command(self) -> str:
+    def ready_marker_command(self, ready_marker: str | None = None) -> str:
         # csh does not ship a `printf` builtin; `echo -n` is portable
         # across csh/tcsh on the platforms we support.
-        return f'echo -n "{self.READY_MARKER}"'
+        return f'echo -n "{self._resolve_ready_marker(ready_marker)}"'
 
     def executable(self) -> str:
         return "csh"
@@ -111,6 +121,10 @@ class XonshShell(UnixShell):
     Activator = activate.XonshActivator
     default_shell = "xonsh"
     default_args = ("-i",)
+    # xonsh's readline/prompt_toolkit backend discards pending PTY input
+    # on startup, so the sendline fallback silently loses the activation
+    # script. Using --rc avoids sending the script through the PTY.
+    supports_init_injection: ClassVar[bool] = True
 
     @property
     def script_suffix(self) -> str:
@@ -118,6 +132,48 @@ class XonshShell(UnixShell):
         # `activate.d` scripts) but `execute()` emits xonsh syntax.
         # `.xsh` is the canonical extension for xonsh scripts.
         return ".xsh"
+
+    def _user_rc_loader(self) -> str:
+        """Restore normal RC discovery replaced by the injected `--rc` file."""
+        return (
+            "from xonsh.environ import xonshrc_context as "
+            "_conda_spawn_xonshrc_context\n"
+            "_conda_spawn_user_rc_files = _conda_spawn_xonshrc_context(\n"
+            '    rcfiles=${...}.get("XONSHRC"),\n'
+            '    rcdirs=${...}.get("XONSHRC_DIR"),\n'
+            "    execer=__xonsh__.execer,\n"
+            "    ctx=__xonsh__.ctx,\n"
+            "    env=__xonsh__.env,\n"
+            ")\n"
+            "del _conda_spawn_xonshrc_context\n"
+            "_conda_spawn_post_rc_fire = events.on_post_rc.fire\n"
+            "def _conda_spawn_fire_post_rc(**kwargs):\n"
+            "    __xonsh__.rc_files = _conda_spawn_user_rc_files\n"
+            "    events.on_post_rc.fire = _conda_spawn_post_rc_fire\n"
+            "    return _conda_spawn_post_rc_fire(**kwargs)\n"
+            "events.on_post_rc.fire = _conda_spawn_fire_post_rc"
+        )
+
+    def spawn_script(self, ready_marker: str | None = None) -> str:
+        # Wrap on_pre_cmdloop.fire so every user handler completes before
+        # activation and the ready marker, independent of handler order.
+        activation_script = super().spawn_script(ready_marker)
+        return (
+            f"{self._user_rc_loader()}\n"
+            "_conda_spawn_pre_cmdloop_fire = events.on_pre_cmdloop.fire\n"
+            "def _conda_spawn_fire_pre_cmdloop(**kwargs):\n"
+            "    events.on_pre_cmdloop.fire = _conda_spawn_pre_cmdloop_fire\n"
+            "    _conda_spawn_result = _conda_spawn_pre_cmdloop_fire(**kwargs)\n"
+            f"{indent(activation_script, '    ')}"
+            "    return _conda_spawn_result\n"
+            "events.on_pre_cmdloop.fire = _conda_spawn_fire_pre_cmdloop\n"
+        )
+
+    def write_init_injection(
+        self, script_path: str
+    ) -> tuple[tuple[str, ...], dict[str, str]] | None:
+        """Use `xonsh --rc` to save a PTY round trip and restore RC discovery."""
+        return ("--rc", script_path), {}
 
     def script(self) -> str:
         # `XonshActivator.unset_var_tmpl` emits `del $VAR` which raises
@@ -144,8 +200,9 @@ class XonshShell(UnixShell):
         # explicit `$[...]` form is unambiguous inside a sourced script.
         return "$[stty echo]"
 
-    def ready_marker_command(self) -> str:
-        return f'print({self.READY_MARKER!r}, end="", flush=True)'
+    def ready_marker_command(self, ready_marker: str | None = None) -> str:
+        marker = self._resolve_ready_marker(ready_marker)
+        return f'print({marker!r}, end="", flush=True)'
 
     def executable(self) -> str:
         return "xonsh"

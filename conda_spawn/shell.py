@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import atexit
 import os
+import secrets
 import shlex
 import shutil
 import signal
-import subprocess
 import struct
+import subprocess
 import sys
-from tempfile import NamedTemporaryFile
+from collections.abc import Iterable
 from logging import getLogger
 from pathlib import Path
-from typing import Iterable
+from tempfile import NamedTemporaryFile
+from typing import ClassVar
 
 if sys.platform != "win32":
     import fcntl
@@ -22,9 +25,32 @@ from conda.base.context import context
 from conda.common.compat import on_win
 
 from . import activate
-
+from .constants import CONDA_SPAWN_ENV_VAR
 
 log = getLogger(f"conda.{__name__}")
+
+_PENDING_CLEANUP_PATHS: set[str] = set()
+
+
+def _remove_path(path: str) -> bool:
+    try:
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        else:
+            os.unlink(path)
+    except FileNotFoundError:
+        return True
+    except OSError as exc:
+        log.debug("Could not delete %s", path, exc_info=exc)
+        return False
+    return True
+
+
+@atexit.register
+def _cleanup_pending_paths() -> None:
+    for path in tuple(_PENDING_CLEANUP_PATHS):
+        if _remove_path(path):
+            _PENDING_CLEANUP_PATHS.discard(path)
 
 
 class Shell:
@@ -39,7 +65,7 @@ class Shell:
             self._activator_args.append("--stack")
         self._activator_args.append(str(prefix))
         self._activator = self.Activator(self._activator_args)
-        self._files_to_remove = []
+        self._files_to_remove: list[str] = []
 
     def spawn(self, prefix: Path) -> int:
         """
@@ -68,19 +94,23 @@ class Shell:
 
     def env(self) -> dict[str, str]:
         env = os.environ.copy()
-        env["CONDA_SPAWN"] = "1"
+        # Keep the internal marker out of conda's public CONDA_* namespace.
+        env[CONDA_SPAWN_ENV_VAR] = "1"
         return env
 
-    def __del__(self):
-        # `__init__` may have failed before `_files_to_remove` was set
-        # (e.g. if a subclass forgot to declare `Activator`). Guard
-        # against that so the interpreter does not emit a spurious
-        # AttributeError during garbage collection.
-        for path in getattr(self, "_files_to_remove", ()):
-            try:
-                os.unlink(path)
-            except OSError as exc:
-                log.debug("Could not delete %s", path, exc_info=exc)
+    def _register_cleanup_path(self, path: str) -> None:
+        self._files_to_remove.append(path)
+        _PENDING_CLEANUP_PATHS.add(path)
+
+    def cleanup(self) -> None:
+        """Remove temporary files created for this shell."""
+        paths = getattr(self, "_files_to_remove", ())
+        self._files_to_remove = []
+        for path in paths:
+            if _remove_path(path):
+                _PENDING_CLEANUP_PATHS.discard(path)
+            else:
+                self._files_to_remove.append(path)
 
 
 class UnixShell(Shell):
@@ -94,9 +124,15 @@ class UnixShell(Shell):
 
     default_shell: str = "/bin/sh"
     default_args: tuple[str, ...] = ("-l", "-i")
+    # When True, the shell supports passing the activation script via
+    # a shell-specific startup mechanism (e.g. fish -C or xonsh --rc)
+    # instead of a separate sendline after startup. This
+    # eliminates a PTY round-trip and avoids races with shells that
+    # discard typeahead input (like xonsh's readline backend).
+    supports_init_injection: ClassVar[bool] = False
 
-    # Sentinel printed after activation to reliably detect when the
-    # spawned shell is ready. Everything before this marker (including
+    # Prefix for the per-spawn sentinel printed after activation. Everything
+    # before the complete marker (including
     # any initial prompt rendered with stale env vars) is consumed
     # before `interact()` starts, preventing a duplicate prompt.
     READY_MARKER = "__CONDA_SPAWN_READY__"
@@ -127,7 +163,7 @@ class UnixShell(Shell):
         ]
         return "".join(lines)
 
-    def _spawn_script(self) -> str:
+    def spawn_script(self, ready_marker: str | None = None) -> str:
         """
         Full contents of the temp file the spawned shell will source:
         activation + prompt setup + post-activation command + ready
@@ -140,7 +176,7 @@ class UnixShell(Shell):
         for extra in (
             self.prompt(),
             self.post_activation_command(),
-            self.ready_marker_command(),
+            self.ready_marker_command(ready_marker),
         ):
             if extra:
                 parts.append(extra)
@@ -168,15 +204,24 @@ class UnixShell(Shell):
         """Run after activation; re-enables terminal echo by default."""
         return "stty echo"
 
-    def ready_marker_command(self) -> str:
+    def ready_marker_command(self, ready_marker: str | None = None) -> str:
         """Print the ready marker with no trailing newline."""
-        return f"printf {self.READY_MARKER}"
+        return f"printf {self._resolve_ready_marker(ready_marker)}"
 
-    def _commandline(self, script_path: str) -> str:
-        return self.source_command(script_path)
+    def _resolve_ready_marker(self, ready_marker: str | None) -> str:
+        marker = self.READY_MARKER if ready_marker is None else ready_marker
+        if not marker:
+            raise ValueError("ready marker cannot be empty")
+        return marker
+
+    def write_init_injection(
+        self, script_path: str
+    ) -> tuple[tuple[str, ...], dict[str, str]] | None:
+        """Return extra argv and env for init-injection launch, or None."""
+        return None
 
     def spawn_tty(self, command: Iterable[str] | None = None) -> pexpect.spawn:
-        def _sigwinch_passthrough(sig, data):
+        def resize_child(sig, data):
             # NOTE: Taken verbatim from pexpect's .interact() docstring.
             # Check for buggy platforms (see pexpect.setwinsize()).
             if "TIOCGWINSZ" in dir(termios):
@@ -188,14 +233,10 @@ class UnixShell(Shell):
             child.setwinsize(a[0], a[1])
 
         size = shutil.get_terminal_size()
+        ready_marker = f"{self.READY_MARKER}{secrets.token_hex(16)}"
+        child = None
+        previous_sigwinch_handler = None
 
-        child = pexpect.spawn(
-            self.executable(),
-            [*self.args()],
-            env=self.env(),
-            echo=False,
-            dimensions=(size.lines, size.columns),
-        )
         try:
             with NamedTemporaryFile(
                 prefix="conda-spawn-",
@@ -203,21 +244,62 @@ class UnixShell(Shell):
                 delete=False,
                 mode="w",
             ) as f:
-                f.write(self._spawn_script())
-            signal.signal(signal.SIGWINCH, _sigwinch_passthrough)
-            # Source the activation script, set the prompt, re-enable echo,
-            # then print a ready marker.  `expect_exact` consumes
-            # everything up to and including the marker, so any stale
-            # initial prompt rendered before activation is discarded.
-            child.sendline(self._commandline(f.name))
-            child.expect_exact(self.READY_MARKER)
-            if command:
-                child.sendline(shlex.join(command))
-            if sys.stdin.isatty():
-                child.interact()
-            return child
+                script_path = f.name
+                self._register_cleanup_path(script_path)
+                f.write(self.spawn_script(ready_marker))
+
+            injection = (
+                self.write_init_injection(script_path)
+                if self.supports_init_injection
+                else None
+            )
+
+            if injection is not None:
+                # Fast path: pass the activation script through the shell's
+                # documented startup option.
+                extra_argv, extra_env = injection
+                env = self.env()
+                env.update(extra_env)
+                child = pexpect.spawn(
+                    self.executable(),
+                    [*extra_argv, *self.args()],
+                    env=env,
+                    echo=False,
+                    dimensions=(size.lines, size.columns),
+                )
+            else:
+                # Fallback: start the shell, then send the source command
+                # via sendline.  This requires a second PTY round-trip and
+                # can race with shells that flush their input buffer on
+                # startup (e.g. xonsh with prompt_toolkit).
+                child = pexpect.spawn(
+                    self.executable(),
+                    [*self.args()],
+                    env=self.env(),
+                    echo=False,
+                    dimensions=(size.lines, size.columns),
+                )
+                child.sendline(self.source_command(script_path))
+
+            previous_sigwinch_handler = signal.signal(signal.SIGWINCH, resize_child)
+            child.expect_exact(ready_marker)
+        except BaseException:
+            if previous_sigwinch_handler is not None:
+                signal.signal(signal.SIGWINCH, previous_sigwinch_handler)
+            if child is not None:
+                try:
+                    child.close(force=True)
+                except Exception as exc:
+                    log.debug("Could not close failed shell startup", exc_info=exc)
+            raise
         finally:
-            self._files_to_remove.append(f.name)
+            self.cleanup()
+
+        if command:
+            child.sendline(shlex.join(command))
+        if sys.stdin.isatty():
+            child.interact()
+        return child
 
 
 class PosixShell(UnixShell):
@@ -255,6 +337,8 @@ class PowershellShell(Shell):
                 delete=False,
                 mode="w",
             ) as f:
+                script_path = f.name
+                self._register_cleanup_path(script_path)
                 f.write(f"{self.script()}\r\n")
                 f.write(f"{self.prompt()}\r\n")
                 if command:
@@ -262,15 +346,19 @@ class PowershellShell(Shell):
                     f.write(f"echo {command}\r\n")
                     f.write(f"{command}\r\n")
             return subprocess.Popen(
-                [self.executable(), *self.args(), f.name], env=self.env(), **kwargs
+                [self.executable(), *self.args(), script_path], env=self.env(), **kwargs
             )
-        finally:
-            self._files_to_remove.append(f.name)
+        except BaseException:
+            self.cleanup()
+            raise
 
     def spawn(self, command: Iterable[str] | None = None) -> int:
-        proc = self.spawn_popen(command)
-        proc.communicate()
-        return proc.wait()
+        try:
+            proc = self.spawn_popen(command)
+            proc.communicate()
+            return proc.wait()
+        finally:
+            self.cleanup()
 
     def script(self) -> str:
         script = self._activator.execute()
