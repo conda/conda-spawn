@@ -6,6 +6,7 @@ from pathlib import Path
 import pexpect
 import pytest
 
+from conda_spawn.constants import CONDA_SPAWN_ENV_VAR
 from conda_spawn.contrib import (
     CshShell,
     FishShell,
@@ -47,7 +48,7 @@ def test_fish_shell(simple_env):
     proc.sendline("env")
     proc.sendeof()
     out = proc.read().decode(errors="replace")
-    assert "_CONDA_SPAWN" in out
+    assert CONDA_SPAWN_ENV_VAR in out
     assert "CONDA_PREFIX" in out
     assert str(simple_env) in out
 
@@ -79,10 +80,10 @@ def test_fish_shell_uses_init_injection(simple_env, tmp_path, monkeypatch):
     assert len(activation_paths) == 1
     assert not activation_paths[0].exists()
     proc.sendline(
-        'printf "CONDA_PREFIX=%s\\n_CONDA_SPAWN=%s\\n'
+        f'printf "CONDA_PREFIX=%s\\n{CONDA_SPAWN_ENV_VAR}=%s\\n'
         "SPAWN_TEST_INIT_INJECTION=%s\\n"
         'SPAWN_TEST_FISH_CONFIG_LOADED=%s\\n" "$CONDA_PREFIX" '
-        '"$_CONDA_SPAWN" "$SPAWN_TEST_INIT_INJECTION" '
+        f'"${CONDA_SPAWN_ENV_VAR}" "$SPAWN_TEST_INIT_INJECTION" '
         '"$SPAWN_TEST_FISH_CONFIG_LOADED"'
     )
     proc.sendline("exit")
@@ -90,7 +91,7 @@ def test_fish_shell_uses_init_injection(simple_env, tmp_path, monkeypatch):
     out = (proc.before or b"").decode(errors="replace")
 
     assert f"CONDA_PREFIX={simple_env}" in out
-    assert "_CONDA_SPAWN=1" in out
+    assert f"{CONDA_SPAWN_ENV_VAR}=1" in out
     assert "SPAWN_TEST_INIT_INJECTION=1" in out
     assert "SPAWN_TEST_FISH_CONFIG_LOADED=1" in out
 
@@ -118,7 +119,7 @@ def test_csh_shell(simple_env):
     proc = shell.spawn_tty()
     proc.sendline("env")
     out = _read_via_exit(proc)
-    assert "_CONDA_SPAWN" in out
+    assert CONDA_SPAWN_ENV_VAR in out
     assert "CONDA_PREFIX" in out
     assert str(simple_env) in out
 
@@ -130,7 +131,7 @@ def test_tcsh_shell(simple_env):
     proc = shell.spawn_tty()
     proc.sendline("env")
     out = _read_via_exit(proc)
-    assert "_CONDA_SPAWN" in out
+    assert CONDA_SPAWN_ENV_VAR in out
     assert "CONDA_PREFIX" in out
     assert str(simple_env) in out
 

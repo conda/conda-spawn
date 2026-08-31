@@ -41,7 +41,7 @@ def test_posix_shell(simple_env):
     proc.sendeof()
     out = proc.read().decode()
     env_vars = set(out.splitlines())
-    assert "_CONDA_SPAWN=1" in env_vars
+    assert f"{CONDA_SPAWN_ENV_VAR}=1" in env_vars
     assert not any(line.startswith("CONDA_SPAWN=") for line in env_vars)
     assert "CONDA_PREFIX" in out
     assert str(simple_env) in out
@@ -78,11 +78,11 @@ def test_posix_shell_uses_native_startup_before_fallback_activation(
     assert startup.count("SPAWN_TEST_ACTIVATION_RAN") == 1
 
     proc.sendline(
-        'printf "CONDA_PREFIX=%s\\n_CONDA_SPAWN=%s\\n'
+        f'printf "CONDA_PREFIX=%s\\n{CONDA_SPAWN_ENV_VAR}=%s\\n'
         "SPAWN_TEST_PROFILE_LOADED=%s\\n"
         "SPAWN_TEST_USER_ENV_LOADED=%s\\n"
         "SPAWN_TEST_INITIAL_ENV_LOADED=%s\\n"
-        'ENV=%s\\n" "$CONDA_PREFIX" "$_CONDA_SPAWN" '
+        f'ENV=%s\\n" "$CONDA_PREFIX" "${CONDA_SPAWN_ENV_VAR}" '
         '"$SPAWN_TEST_PROFILE_LOADED" "$SPAWN_TEST_USER_ENV_LOADED" '
         '"${SPAWN_TEST_INITIAL_ENV_LOADED:-}" "$ENV"'
     )
@@ -98,7 +98,7 @@ def test_posix_shell_uses_native_startup_before_fallback_activation(
     out += (proc.before or b"").decode(errors="replace")
 
     assert f"CONDA_PREFIX={simple_env}" in out
-    assert "_CONDA_SPAWN=1" in out
+    assert f"{CONDA_SPAWN_ENV_VAR}=1" in out
     assert "SPAWN_TEST_PROFILE_LOADED=1" in out
     assert "SPAWN_TEST_USER_ENV_LOADED=1" in out
     assert "SPAWN_TEST_INITIAL_ENV_LOADED=" in out
@@ -190,8 +190,9 @@ def test_bash_native_login_startup_before_fallback_activation(
     assert not activation_paths[0].exists()
 
     proc.sendline(
-        'printf "CONDA_PREFIX=%s\\n_CONDA_SPAWN=%s\\nPROFILE_VAR=%s\\n" '
-        '"$CONDA_PREFIX" "$_CONDA_SPAWN" "$SPAWN_TEST_BASH_PROFILE_VAR"'
+        f'printf "CONDA_PREFIX=%s\\n{CONDA_SPAWN_ENV_VAR}=%s\\nPROFILE_VAR=%s\\n" '
+        f'"$CONDA_PREFIX" "${CONDA_SPAWN_ENV_VAR}" '
+        '"$SPAWN_TEST_BASH_PROFILE_VAR"'
     )
     proc.sendline("spawn_test_profile_func")
     proc.sendline("spawn_test_profile_alias")
@@ -205,7 +206,7 @@ def test_bash_native_login_startup_before_fallback_activation(
     logout = (proc.before or b"").decode(errors="replace")
 
     assert f"CONDA_PREFIX={simple_env}" in state
-    assert "_CONDA_SPAWN=1" in state
+    assert f"{CONDA_SPAWN_ENV_VAR}=1" in state
     assert "PROFILE_VAR=profile" in state
     assert "SPAWN_TEST_BASH_FUNCTION" in state
     assert "SPAWN_TEST_BASH_ALIAS" in state
@@ -254,7 +255,7 @@ def test_zsh_native_startup_precedes_fallback_activation(
 
     proc.sendline(
         'print -r -- "CONDA_PREFIX=$CONDA_PREFIX" '
-        '"_CONDA_SPAWN=$_CONDA_SPAWN" '
+        f'"{CONDA_SPAWN_ENV_VAR}=${CONDA_SPAWN_ENV_VAR}" '
         '"PROMPT_ZDOTDIR=${ZDOTDIR-<unset>}"'
     )
     proc.sendline("zsh -dlic 'print -r -- NESTED_SHELL_READY'")
@@ -270,7 +271,7 @@ def test_zsh_native_startup_precedes_fallback_activation(
     out = nested_startup + after_nested + (proc.before or b"").decode(errors="replace")
 
     assert f"CONDA_PREFIX={simple_env}" in out
-    assert "_CONDA_SPAWN=1" in out
+    assert f"{CONDA_SPAWN_ENV_VAR}=1" in out
     assert f"PROMPT_ZDOTDIR={user_zdotdir}" in out
     assert "SPAWN_TEST_ZLOGOUT_LOADED" in out
 
@@ -363,7 +364,7 @@ def test_powershell(simple_env):
         out, _ = proc.communicate(timeout=30)
         proc.kill()
         assert not proc.poll()
-        assert "_CONDA_SPAWN" in out
+        assert CONDA_SPAWN_ENV_VAR in out
         assert "CONDA_PREFIX" in out
         assert str(simple_env) in out
 
@@ -375,7 +376,7 @@ def test_cmd(simple_env):
         out, _ = proc.communicate(timeout=5)
         proc.kill()
         assert not proc.poll()
-        assert "_CONDA_SPAWN" in out
+        assert CONDA_SPAWN_ENV_VAR in out
         assert "CONDA_PREFIX" in out
         assert str(simple_env) in out
 
