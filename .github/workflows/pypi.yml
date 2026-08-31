@@ -50,6 +50,9 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
     needs: [build]
+    environment:
+      name: pypi
+      url: https://pypi.org/p/conda-spawn
     permissions:
       id-token: write
 

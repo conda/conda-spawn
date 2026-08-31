@@ -31,7 +31,7 @@ dependencies = [
 dynamic = ["version"]
 
 [project.urls]
-homepage = "https://github.com/conda-incubator/conda-spawn"
+homepage = "https://github.com/conda/conda-spawn"
 
 [project.entry-points.conda]
 conda-spawn = "conda_spawn.plugin"
