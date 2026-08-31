@@ -20,7 +20,7 @@ This is a `conda` plugin and goes in the `base` environment:
 conda install -n base conda-forge::conda-spawn
 ```
 
-More information is available on our [documentation](https://conda-incubator.github.io/conda-spawn).
+More information is available on our [documentation](https://conda.github.io/conda-spawn/).
 
 ## Supported shells
 

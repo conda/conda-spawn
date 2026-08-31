@@ -38,8 +38,8 @@ test:
     - conda spawn --help
 
 about:
-  home: https://github.com/conda-incubator/conda-spawn
+  home: https://github.com/conda/conda-spawn
   license: MIT AND BSD-3-Clause
   license_file: LICENSE
   summary: Activate conda environments in new shell processes
-  dev_url: https://github.com/conda-incubator/conda-spawn
+  dev_url: https://github.com/conda/conda-spawn
