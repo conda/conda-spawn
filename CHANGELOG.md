@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Docs
 
 * Update project and documentation URLs after the repository moved to the
-  `conda` organization.
+  `conda` organization. (#76)
 
 ### Contributors
 
