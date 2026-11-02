@@ -307,6 +307,21 @@ class PosixShell(UnixShell):
     default_shell = "/bin/sh"
     prompt_strip_markers = ("PS1=",)
 
+    def script(self) -> str:
+        script = super().script()
+        conda_vars = context.conda_exe_vars_dict
+        command = shlex.join(
+            value
+            for name in ("CONDA_EXE", "_CE_M", "_CE_CONDA")
+            if (value := conda_vars.get(name))
+        )
+        function = f'conda() {{\n    {command} "$@"\n}}'
+        # Delay parsing until the alias is removed, including under `eval` for --hook.
+        return (
+            f"{script}\nunalias conda 2>/dev/null || true\n"
+            f"eval {shlex.quote(function)}\n"
+        )
+
     def prompt(self) -> str:
         return f'PS1="{self.prompt_modifier()}${{PS1:-}}"'
 
