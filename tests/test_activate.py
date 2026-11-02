@@ -6,10 +6,11 @@ from conda.common.compat import on_win
 from conda_spawn.shell import PosixShell, PowershellShell
 
 
-def test_spawn_script_omits_conda_meta_vars(simple_env):
-    script = PosixShell(simple_env).script()
-    assert context.conda_exe_vars_dict["CONDA_EXE"] not in script
-    assert "CONDA_PREFIX" in script
+def test_spawn_activation_omits_conda_meta_vars(simple_env):
+    activation = PosixShell(simple_env)._activator.build_activate(str(simple_env))
+    assert not context.conda_exe_vars_dict.keys() & activation["export_vars"].keys()
+    assert context.conda_exe_vars_dict.keys() <= set(activation["unset_vars"])
+    assert activation["export_vars"]["CONDA_PREFIX"] == str(simple_env)
 
 
 def test_uppercase_path_omits_conda_meta_vars(simple_env):
