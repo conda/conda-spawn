@@ -377,15 +377,19 @@ class PowershellShell(Shell):
 
     def script(self) -> str:
         script = self._activator.execute()
-        # On Windows, conda.bat (in condabin) silently no-ops for
-        # activate/deactivate in PowerShell. Define a conda function
-        # that routes to conda.exe so main_mock_activate fires as
-        # intended ("Run 'conda init'..."). We bake in the path from
-        # context.conda_exe because export_metavars=False means
-        # $Env:CONDA_EXE is not set during spawn activation.
         if on_win:
-            conda_exe = context.conda_exe_vars_dict["CONDA_EXE"]
-            script += f'\r\nfunction conda {{ & "{conda_exe}" @args }}'
+            conda_vars = context.conda_exe_vars_dict
+            command = " ".join(
+                "'" + value.replace("'", "''") + "'"
+                for name in ("CONDA_EXE", "_CE_M", "_CE_CONDA")
+                if (value := conda_vars.get(name))
+            )
+            # The initialized alias outranks functions and needs the cleared metavars.
+            # Call the launcher directly to also avoid conda.bat's activation no-op.
+            script += (
+                "\r\nRemove-Item Alias:conda -Force -ErrorAction SilentlyContinue"
+                f"\r\nfunction conda {{ & {command} @args }}"
+            )
         return script
 
     def prompt(self) -> str:
