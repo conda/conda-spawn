@@ -60,7 +60,13 @@ class XonshActivator(_CondabinFirstMixin, _activate.XonshActivator):
 
 
 class CmdExeActivator(_CondabinFirstMixin, _activate.CmdExeActivator):
-    pass
+    # Spawn executes batch commands, not conda's newer key/value activation file.
+    tempfile_extension = None
+    unset_var_tmpl = '@SET "%s="'
+    export_var_tmpl = '@SET "%s=%s"'
+    path_var_tmpl = export_var_tmpl
+    set_var_tmpl = export_var_tmpl
+    run_script_tmpl = '@CALL "%s"'
 
 
 class FishActivator(_CondabinFirstMixin, _activate.FishActivator):
