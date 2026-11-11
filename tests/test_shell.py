@@ -1,12 +1,16 @@
+from __future__ import annotations
+
 import gc
+import json
+import shlex
 import shutil
 import sys
 from pathlib import Path
-from subprocess import DEVNULL, PIPE, check_output
+from subprocess import DEVNULL, PIPE, check_output, run
 
 import pexpect
 import pytest
-from conda.base.context import reset_context
+from conda.base.context import context, reset_context
 
 from conda_spawn import shell as shell_module
 from conda_spawn.constants import CONDA_SPAWN_ENV_VAR
@@ -45,6 +49,101 @@ def test_posix_shell(simple_env):
     assert not any(line.startswith("CONDA_SPAWN=") for line in env_vars)
     assert "CONDA_PREFIX" in out
     assert str(simple_env) in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Only tested on Unix")
+@pytest.mark.parametrize("conda_alias", [False, True], ids=["function", "alias"])
+@pytest.mark.parametrize(
+    "command, expected_status",
+    [("info --json", 0), ("activate", 1), ("deactivate", 1)],
+    ids=["info", "activate", "deactivate"],
+)
+def test_posix_conda_command_after_shell_init(
+    initialized_posix_shell, tmp_path, command, expected_status, conda_alias
+):
+    stdout = tmp_path / "stdout"
+    stderr = tmp_path / "stderr"
+    status = tmp_path / "status"
+    executable_var = tmp_path / "executable-var"
+    commands = tmp_path / "commands.sh"
+    commands.write_text(
+        f"conda {command} > {shlex.quote(str(stdout))} "
+        f"2> {shlex.quote(str(stderr))}\n"
+        f'printf "%s" "$?" > {shlex.quote(str(status))}\n'
+        f'printf "%s" "${{CONDA_EXE:-}}" > {shlex.quote(str(executable_var))}\n'
+        "exit\n"
+    )
+    proc = initialized_posix_shell.spawn_tty()
+    try:
+        assert b"CONDA_INIT_LOADED" in proc.before
+        proc.sendline(f". {shlex.quote(str(commands))}")
+        proc.expect(pexpect.EOF, timeout=30)
+    finally:
+        proc.close(force=True)
+
+    assert int(status.read_text()) == expected_status, stderr.read_text()
+    assert executable_var.read_text() == ""
+    if expected_status == 0:
+        info = json.loads(stdout.read_text())
+        assert info["root_prefix"] == context.root_prefix
+        assert info["active_prefix"] == str(initialized_posix_shell.prefix)
+    else:
+        assert f"Run 'conda init' before 'conda {command}'" in stderr.read_text()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Only tested on Unix")
+@pytest.mark.parametrize("dev", [False, True], ids=["executable", "python-module"])
+@pytest.mark.parametrize("shell_name", ["sh", "bash", "zsh"])
+def test_posix_conda_command_preserves_arguments(
+    simple_env, tmp_path, monkeypatch, dev, shell_name
+):
+    if shutil.which(shell_name) is None:
+        pytest.skip(f"{shell_name} not installed")
+    executable = tmp_path / "conda's executable"
+    module = tmp_path / "forwarding_probe.py"
+    module.write_text(
+        "import json, sys\nprint(json.dumps(sys.argv[1:]))\nsys.exit(23)\n"
+    )
+    if dev:
+        executable.symlink_to(sys.executable)
+    else:
+        executable.write_text(
+            f"#!/bin/sh\nexec {shlex.quote(sys.executable)} "
+            f'{shlex.quote(str(module))} "$@"\n'
+        )
+        executable.chmod(0o755)
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    monkeypatch.setattr(
+        type(context),
+        "conda_exe_vars_dict",
+        property(
+            lambda self: {
+                "CONDA_EXE": str(executable),
+                "_CE_M": "-m" if dev else None,
+                "_CE_CONDA": "forwarding_probe" if dev else None,
+            }
+        ),
+    )
+    script = PosixShell(simple_env).script()
+    script = "alias conda='false'\neval " + shlex.quote(script) + "\n"
+    # A different conda found after activation must not replace the launcher.
+    other_bin = tmp_path / "other-bin"
+    other_bin.mkdir()
+    other_conda = other_bin / "conda"
+    other_conda.write_text("#!/bin/sh\nexit 99\n")
+    other_conda.chmod(0o755)
+    script += f"\nPATH={shlex.quote(str(other_bin))}:$PATH\n"
+    arguments = ["two words", "", "single'quote", "$HOME", "--"]
+    script += "\\conda " + shlex.join(arguments)
+    result = run(
+        [shell_name, "-f", "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 23, result.stderr
+    assert json.loads(result.stdout) == arguments
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Pty's only available on Unix")
@@ -441,11 +540,11 @@ def test_condabin_first_posix_shell(simple_env, conda_env, no_prompt):
 
     shell = PosixShell(conda_env)
     proc = shell.spawn_tty()
-    proc.sendline("which conda")
+    proc.sendline("conda info --base")
     proc.sendeof()
     print(out)
     out = proc.read().decode()
-    assert f"{sys.prefix}/condabin/conda" in out
+    assert context.root_prefix in out
     assert str(conda_env) not in out
 
 
