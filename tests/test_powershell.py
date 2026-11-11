@@ -61,7 +61,7 @@ def test_powershell_conda_command(
     invoke_probe = f". {_quote(probe)}\n"
     startup = tmp_path / "startup.ps1"
     startup.write_text(
-        (PowerShellActivator().hook(auto_activate=False) if initialized else "")
+        (PowerShellActivator().hook(False) if initialized else "")
         + "\n"
         + shell.script()
         + "\n"
