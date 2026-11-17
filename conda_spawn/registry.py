@@ -11,6 +11,7 @@ from logging import getLogger
 
 import shellingham
 
+from .contrib import CshShell, FishShell, TcshShell, XonshShell
 from .shell import (
     BashShell,
     CmdExeShell,
@@ -19,7 +20,6 @@ from .shell import (
     Shell,
     ZshShell,
 )
-from .contrib import CshShell, FishShell, TcshShell, XonshShell
 
 log = getLogger(f"conda.{__name__}")
 
