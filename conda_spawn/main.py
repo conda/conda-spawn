@@ -1,9 +1,10 @@
-""" """
+"""Public entrypoints for spawning shells in a conda prefix."""
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING
 
 from .exceptions import ShellNotSupported
 from .registry import SHELLS, detect_shell_class
