@@ -398,13 +398,7 @@ class CmdExeShell(PowershellShell):
     Activator = activate.CmdExeActivator
 
     def script(self):
-        return "\r\n".join(
-            [
-                "@ECHO OFF",
-                Path(self._activator.execute()).read_text(),
-                "@ECHO ON",
-            ]
-        )
+        return f"@ECHO OFF\r\n{self._activator.execute()}\r\n@ECHO ON"
 
     def prompt(self) -> str:
         return f'@SET "PROMPT={self.prompt_modifier()}$P$G"'
