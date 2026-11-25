@@ -1,4 +1,4 @@
-""" """
+"""Exceptions raised by conda-spawn."""
 
 from conda.base.constants import COMPATIBLE_SHELLS
 from conda.common.io import dashlist
