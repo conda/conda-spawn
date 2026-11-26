@@ -35,8 +35,7 @@ class _CondabinFirstMixin:
 
     def _add_prefix_to_path(self, prefix, starting_path_dirs=None):
         path_list = list(super()._add_prefix_to_path(prefix, starting_path_dirs))
-        # JRG: no conda shell function has highest precedence here, so keep
-        # $CONDA_ROOT/condabin first and avoid env-local conda shadowing base.
+        # Keep conda's condabin first for commands that resolve conda through PATH.
         return tuple(self._ensure_root_condabin_is_first(path_list))
 
     def _replace_prefix_in_path(self, old_prefix, new_prefix, starting_path_dirs=None):
