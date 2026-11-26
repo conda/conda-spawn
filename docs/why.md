@@ -14,7 +14,9 @@ The `conda` shell function wrapper and the initialization logic have a non-negli
 
 This project is inspired by the workflows implemented in `poetry shell` and `pixi shell`. These workflows prove that no shell initialization logic is needed for effective virtual environment management.
 
-The idea is to start new shell processes and then run the activation logic inside them. Once done, the user exits the process and returns to the parent session. This requires no shell function wrapper, which renders all the logic in `conda init` unnecessary; we only need `$CONDA_ROOT/condabin` in `PATH` so we can cleanly find the `conda` entry point.
+The idea is to start new shell processes and then run the activation logic inside them. Once done, the user exits the process and returns to the parent session. No changes to shell startup files are needed.
+
+In POSIX shells, conda-spawn defines a `conda()` function that forwards commands to the conda executable that launched the shell. This replaces any conda function loaded by a startup file, so commands still work after activation clears `CONDA_EXE`. The function only forwards commands. It does not activate or deactivate environments in the running shell. Use `exit` or Ctrl+D to return to the parent session.
 
 For now, this idea is distributed as an optional plugin. If proven successful and it's well received by the community, we would propose adding it as a default `conda` plugin and suggest deprecating the old workflow (`conda init`, `activate` and `deactivate`).
 
